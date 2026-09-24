@@ -139,3 +139,43 @@ def test_post_due_is_safe_under_concurrent_requests(client):
             db.delete(t)
         db.delete(db.get(RecurringRule, rule_id))
         db.commit()
+
+
+def test_edit_rule_changes_future_transactions_only(client):
+    ws = wallets(client)
+    cats = {c["name"]: c["id"] for c in client.get("/api/categories").json()}
+    body = {"date": TODAY.isoformat(), "amount": 30, "merchant": "Gym Co", "wallet_id": ws["Checking"]["id"],
+            "category_id": cats["Shopping"], "repeat": "monthly"}
+    first = client.post("/api/transactions", json=body).json()
+    rule = next(r for r in client.get("/api/recurring").json() if r["merchant"] == "Gym Co")
+
+    edited = {**rule, "wallet_id": ws["Credit card"]["id"], "category_id": cats["Household"], "frequency": "weekly",
+              "next_date": TODAY.isoformat(), "amount": 32.5}
+    saved = client.put(f"/api/recurring/{rule['id']}", json=edited).json()
+    assert (saved["wallet_id"], saved["category_id"], saved["frequency"], saved["next_date"], saved["amount"]) == (
+        ws["Credit card"]["id"], cats["Household"], "weekly", TODAY.isoformat(), 32.5)
+
+    posted = sorted(client.get("/api/transactions", params={"q": "Gym Co"}).json(), key=lambda t: t["id"])
+    assert len(posted) == 2
+    old, new = posted
+    assert (old["id"], old["wallet_id"], old["category_id"], old["amount"]) == (first["id"], ws["Checking"]["id"], cats["Shopping"], 30)
+    assert (new["wallet_id"], new["category_id"], new["amount"], new["date"]) == (ws["Credit card"]["id"], cats["Household"], 32.5, TODAY.isoformat())
+    after = next(r for r in client.get("/api/recurring").json() if r["id"] == rule["id"])
+    assert after["next_date"] == advance(TODAY, Frequency.weekly).isoformat()
+
+    for t in posted:
+        client.delete(f"/api/transactions/{t['id']}")
+    client.delete(f"/api/recurring/{rule['id']}")
+
+
+def test_edit_rule_validation(client):
+    ws = wallets(client)
+    rule = next(r for r in client.get("/api/recurring").json() if r["kind"] == "transfer")
+    assert client.put(f"/api/recurring/{rule['id']}", json={**rule, "to_wallet_id": rule["wallet_id"]}).status_code == 422
+    assert client.put(f"/api/recurring/{rule['id']}", json={**rule, "to_wallet_id": None}).status_code == 422
+    assert client.put(f"/api/recurring/{rule['id']}", json={**rule, "frequency": "daily"}).status_code == 422
+    assert client.put(f"/api/recurring/{rule['id']}", json={**rule, "amount": 0}).status_code == 422
+    moved = client.put(f"/api/recurring/{rule['id']}", json={**rule, "to_wallet_id": ws["Cash"]["id"]}).json()
+    assert moved["to_wallet_id"] == ws["Cash"]["id"]
+    client.put(f"/api/recurring/{rule['id']}", json=rule)
+    assert client.put("/api/recurring/99999", json=rule).status_code == 404

@@ -1,7 +1,7 @@
 "use client";
 
 import { useState } from "react";
-import { api, Category, Frequency, Kind, RecurringInput, Wallet } from "@/lib/api";
+import { api, Category, Frequency, Kind, RecurringInput, RecurringRule, Wallet } from "@/lib/api";
 import { iso } from "@/lib/format";
 
 const KINDS: { value: Kind; label: string }[] = [
@@ -10,23 +10,28 @@ const KINDS: { value: Kind; label: string }[] = [
   { value: "transfer", label: "Transfer" },
 ];
 
+/** Adds a recurring item, or edits one when `initial` is given. */
 export default function RecurringForm({
   wallets,
   categories,
+  initial,
   onSubmit,
+  onCancel,
 }: {
   wallets: Wallet[];
   categories: Category[];
+  initial?: RecurringRule;
   onSubmit: (rule: RecurringInput) => Promise<void>;
+  onCancel?: () => void;
 }) {
-  const [kind, setKind] = useState<Kind>("expense");
-  const [amount, setAmount] = useState("");
-  const [merchant, setMerchant] = useState("");
-  const [walletId, setWalletId] = useState("");
-  const [toWalletId, setToWalletId] = useState("");
-  const [categoryId, setCategoryId] = useState("");
-  const [frequency, setFrequency] = useState<Frequency>("monthly");
-  const [nextDate, setNextDate] = useState(iso(new Date()));
+  const [kind, setKind] = useState<Kind>(initial?.kind ?? "expense");
+  const [amount, setAmount] = useState(initial ? String(initial.amount) : "");
+  const [merchant, setMerchant] = useState(initial?.merchant ?? "");
+  const [walletId, setWalletId] = useState(initial ? String(initial.wallet_id) : "");
+  const [toWalletId, setToWalletId] = useState(initial?.to_wallet_id ? String(initial.to_wallet_id) : "");
+  const [categoryId, setCategoryId] = useState(initial?.category_id ? String(initial.category_id) : "");
+  const [frequency, setFrequency] = useState<Frequency>(initial?.frequency ?? "monthly");
+  const [nextDate, setNextDate] = useState(initial?.next_date ?? iso(new Date()));
 
   const isTransfer = kind === "transfer";
   const fromWallet = walletId || String(wallets[0]?.id ?? "");
@@ -55,6 +60,7 @@ export default function RecurringForm({
           frequency,
           next_date: nextDate,
         });
+        if (initial) return;
         setAmount("");
         setMerchant("");
         setCategoryId("");
@@ -69,8 +75,8 @@ export default function RecurringForm({
             type="button"
             aria-pressed={kind === k.value}
             onClick={() => {
+              if (k.value !== kind) setCategoryId("");
               setKind(k.value);
-              setCategoryId("");
             }}
             className={`rounded-full py-1.5 ${kind === k.value ? "bg-panel shadow-sm" : "text-ink-2"}`}
           >
@@ -151,17 +157,28 @@ export default function RecurringForm({
           </select>
         </label>
         <label className="text-sm font-medium">
-          First date
+          {initial ? "Next date" : "First date"}
           <input className="field mt-1" type="date" required value={nextDate} onChange={(e) => setNextDate(e.target.value)} />
         </label>
       </div>
       <div className="flex flex-wrap items-center justify-between gap-3">
         <p className="text-sm text-ink-2">
-          {startsNow
-            ? "The first date is today or earlier, so it is added to your transactions right away."
-            : "It is added to your transactions on the first date, then keeps repeating."}
+          {initial
+            ? startsNow
+              ? "The next date is today or earlier, so it is added to your transactions when you save."
+              : "Changes apply from the next date. Transactions already added stay as they are."
+            : startsNow
+              ? "The first date is today or earlier, so it is added to your transactions right away."
+              : "It is added to your transactions on the first date, then keeps repeating."}
         </p>
-        <button className="btn btn-primary">Add recurring</button>
+        <span className="flex gap-2">
+          {onCancel && (
+            <button type="button" className="btn" onClick={onCancel}>
+              Cancel
+            </button>
+          )}
+          <button className="btn btn-primary">{initial ? "Save changes" : "Add recurring"}</button>
+        </span>
       </div>
     </form>
   );

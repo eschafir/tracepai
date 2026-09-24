@@ -9,14 +9,12 @@ import { money, shortDate } from "@/lib/format";
 
 const FREQUENCIES: Record<Frequency, string> = { weekly: "Every week", monthly: "Every month", yearly: "Every year" };
 
-type Draft = { amount: string; frequency: Frequency; next_date: string };
-
 export default function RecurringPage() {
   const [rules, setRules] = useState<RecurringRule[] | null>(null);
   const [suggestions, setSuggestions] = useState<RecurringSuggestion[]>([]);
   const [wallets, setWallets] = useState<Wallet[]>([]);
   const [categories, setCategories] = useState<Category[]>([]);
-  const [editing, setEditing] = useState<{ id: number; draft: Draft } | null>(null);
+  const [editing, setEditing] = useState<number | null>(null);
   const [error, setError] = useState("");
 
   const load = useCallback(async () => {
@@ -93,67 +91,15 @@ export default function RecurringPage() {
           ) : (
             <ul className="divide-y divide-line">
               {rules?.map((r) =>
-                editing?.id === r.id ? (
-                  <li key={r.id} className="py-3">
-                    <form
-                      className="flex flex-wrap items-end gap-3 text-sm"
-                      onSubmit={(e) => {
-                        e.preventDefault();
-                        const d = editing.draft;
-                        run(() =>
-                          api(`/recurring/${r.id}`, {
-                            method: "PUT",
-                            json: { ...r, amount: Number(d.amount), frequency: d.frequency, next_date: d.next_date },
-                          }),
-                        );
-                      }}
-                    >
-                      <span className="w-full font-medium">{r.merchant}</span>
-                      <label className="font-medium">
-                        Amount
-                        <input
-                          className="field mt-1 w-28 tnum"
-                          type="number"
-                          step="0.01"
-                          min="0.01"
-                          required
-                          value={editing.draft.amount}
-                          onChange={(e) => setEditing({ id: r.id, draft: { ...editing.draft, amount: e.target.value } })}
-                        />
-                      </label>
-                      <label className="font-medium">
-                        Repeats
-                        <select
-                          className="field mt-1"
-                          value={editing.draft.frequency}
-                          onChange={(e) =>
-                            setEditing({ id: r.id, draft: { ...editing.draft, frequency: e.target.value as Frequency } })
-                          }
-                        >
-                          {Object.entries(FREQUENCIES).map(([value, label]) => (
-                            <option key={value} value={value}>
-                              {label}
-                            </option>
-                          ))}
-                        </select>
-                      </label>
-                      <label className="font-medium">
-                        Next date
-                        <input
-                          className="field mt-1"
-                          type="date"
-                          required
-                          value={editing.draft.next_date}
-                          onChange={(e) => setEditing({ id: r.id, draft: { ...editing.draft, next_date: e.target.value } })}
-                        />
-                      </label>
-                      <span className="ml-auto flex gap-2">
-                        <button type="button" className="btn" onClick={() => setEditing(null)}>
-                          Cancel
-                        </button>
-                        <button className="btn btn-primary">Save changes</button>
-                      </span>
-                    </form>
+                editing === r.id ? (
+                  <li key={r.id} className="py-4">
+                    <RecurringForm
+                      wallets={wallets}
+                      categories={categories}
+                      initial={r}
+                      onCancel={() => setEditing(null)}
+                      onSubmit={(rule) => run(() => api(`/recurring/${r.id}`, { method: "PUT", json: { ...r, ...rule } }))}
+                    />
                   </li>
                 ) : (
                   <li key={r.id} className="flex flex-wrap items-center gap-x-4 gap-y-1 py-3 text-sm">
@@ -170,12 +116,7 @@ export default function RecurringPage() {
                     <span className="flex gap-3">
                       <button
                         className="text-accent"
-                        onClick={() =>
-                          setEditing({
-                            id: r.id,
-                            draft: { amount: String(r.amount), frequency: r.frequency, next_date: r.next_date },
-                          })
-                        }
+                        onClick={() => setEditing(r.id)}
                       >
                         Edit
                       </button>
