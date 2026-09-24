@@ -7,7 +7,7 @@ dependencies = [
     "fastapi>=0.141.1",
     "pillow>=12.3.0",
     "pwdlib[argon2]>=0.3.1",
-    "pytesseract>=0.3.13",
+    "pypdfium2>=5.13.0",
     "python-multipart>=0.0.32",
     "sqlmodel>=0.0.47",
     "uvicorn[standard]>=0.53.0",
@@ -21,3 +21,5 @@ dev = [
 
 [tool.pytest.ini_options]
 pythonpath = ["."]
+addopts = "-m 'not model'"
+markers = ["model: runs the real vision model through Ollama (slow; run with -m model)"]

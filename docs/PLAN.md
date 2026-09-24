@@ -273,3 +273,167 @@ Phase 2 complete. 34 backend tests pass. The end-to-end browser flows for Phase 
 Deviations from the plan:
 - Budgets stay across all wallets. The dashboard labels them "Across all wallets" when you pick one wallet.
 - Choosing a date format during import uses the format that parses the most rows. When dates are ambiguous (01/09), MM/DD wins the tie and you can change it in the preview.
+
+---
+
+# TracepAI: Read receipts, invoices and bank statements with qwen3-vl (Ollama)
+
+## Context
+Today, receipt photos are read with Tesseract plus hand-written rules. That only finds one total, and bank statements can only come in as CSV. You want every document read by the local vision model `qwen3-vl:8b`, which you've downloaded with Ollama:
+- a photo taken in the app,
+- an uploaded receipt, ticket or invoice (image or PDF),
+- an uploaded bank statement (PDF or image) with many transactions.
+
+Tesseract is removed (your decision).
+
+### What I measured on this Mac
+- **Setup:** Ollama 0.34.4 has `qwen3-vl:8b` (8.8B parameters, vision support, thinking on by default).
+- **Receipt** (generated image): correct merchant, date and total, in about 9 seconds once the model is loaded. The first call adds a 5-second model load.
+- **12-row bank statement:**
+  - All 11 transactions correct: dates, amounts, and money in vs out. The opening and closing balance rows were skipped.
+  - It took about 92 seconds with `format:"json"` and `think:false`.
+  - With the strict JSON schema it took 149 seconds, because the model pads its output with whitespace. So the plan uses plain JSON mode and validates the result in code.
+- **Prompt wording matters.** Early prompts labeled a receipt as income. The model now returns `direction: money_out | money_in`, the prompt spells out the rules, and code converts that to expense or income.
+- **Docker:** the container reaches Ollama on the Mac at `http://host.docker.internal:11434` (verified with `docker exec`).
+
+## Backend
+
+### `app/vision.py` (new): the Ollama client
+- **Settings:** `TRACEPAI_OLLAMA_URL` (default `http://localhost:11434`; the Dockerfile sets `http://host.docker.internal:11434`) and `TRACEPAI_VISION_MODEL` (default `qwen3-vl:8b`).
+- **`read_pages(images: list[bytes]) -> Extraction`:** one `/api/chat` call per page, using the standard library (`urllib`), so no new HTTP dependency.
+  - Request options: `think:false`, `format:"json"`, `temperature:0`, `keep_alive:"10m"`, and a 600-second timeout per page.
+  - Uses the prompt I tested above.
+- **Validating the model's answer.** A Pydantic model checks each page:
+  - `document_type` must be one of receipt, invoice, bank_statement or other.
+  - Each transaction gets `kind` from `direction`, and `amount` becomes `abs(amount)`.
+  - A date that isn't valid YYYY-MM-DD becomes null.
+  - The merchant is trimmed and cut to 80 characters.
+  - Rows with no amount or a zero amount are dropped.
+  - Pages are combined in order. The document type comes from the first page, but becomes bank_statement if any page is one.
+- **Errors, each turned into a message that says how to fix it:**
+  - Ollama can't be reached → 503, "Can't reach Ollama at <url>. Open the Ollama app and try again."
+  - The model isn't installed → 503, "Run `ollama pull qwen3-vl:8b`, then try again."
+  - The model returns JSON that doesn't parse, twice in a row (one retry) → 502, "The document could not be read. Try a sharper photo."
+
+### `app/documents.py` (new): files to page images
+- **Images** (JPEG, PNG, HEIC is not supported, WebP):
+  - apply the phone's rotation (`ImageOps.exif_transpose`),
+  - convert to RGB,
+  - shrink so the longest side is at most 1600px (keeps prompt time down),
+  - encode as PNG.
+- **PDFs:** render each page with `pypdfium2` (a new dependency; a pure wheel, no system packages) at about 144 dpi, up to 8 pages. More than 8 pages → 400, "Split statements longer than 8 pages."
+- **Anything else** → 400, "Upload a photo, an image or a PDF."
+
+### Receipt scan: `app/routers/receipts.py`
+- `POST /receipts/scan` keeps its path and response fields (`merchant`, `date`, `amount`, `receipt_path`), and now also returns `kind`, `document_type` and `count`.
+- It saves the upload as the attachment (PDFs included), reads it with `vision`, and returns the first transaction.
+- If there are several (a statement), `count > 1` lets the form point you to Import.
+- `raw_text` is dropped.
+- `GET /receipts/{name}` is unchanged.
+
+### Import: `app/routers/imports.py`
+- **Shared saving.** The saving step of the CSV import (duplicate check by wallet, date, amount and merchant, the `suggest_category` call, the `imported` tag) moves into `save_rows(db, user, wallet_id, rows)`. The CSV import and the new document import both use it. The CSV behaviour and its tests stay the same.
+- **`POST /import/document/preview`** (file) → `{document_type, transactions: [{date, merchant, amount, kind, category_id}]}`. The category is pre-filled with `suggest_category` (`app/categorize.py`).
+- **`POST /import/document`** (JSON: `wallet_id`, plus the reviewed `transactions` list) → `save_rows` → `{imported, duplicates, errors}`. A row without a date is reported as an error for that row.
+
+### Cleanup
+- Delete `app/ocr.py` and `tests/test_ocr.py`.
+- Remove `pytesseract` from `pyproject.toml`, and `tesseract-ocr` from the Dockerfile.
+- Add `pypdfium2`.
+
+### Scripts
+- `start-linux.sh` gains `--add-host=host.docker.internal:host-gateway`. Docker Desktop provides that name on Mac and Windows but plain Linux Docker doesn't.
+- The README notes that the container needs Ollama running with `qwen3-vl:8b`, and that on Linux Ollama must listen beyond localhost (`OLLAMA_HOST=0.0.0.0`).
+
+## Frontend
+
+### Add form: `components/TransactionModal.tsx`
+- "Scan receipt" becomes two buttons:
+  - **Take photo** (`accept="image/*" capture="environment"`), which opens the iPhone camera,
+  - **Upload file** (`accept="image/*,application/pdf"`, no `capture`), which opens Files or Photos.
+- **While reading:** "Reading with qwen3-vl, 12s", with a live seconds counter. Both buttons are disabled.
+- **When done:**
+  - It fills in amount, date, merchant and kind.
+  - It runs the existing category suggestion.
+  - It shows "Check the details before saving."
+  - If `count > 1`, it also shows: "This looks like a bank statement with N transactions. Use Import on the Transactions page to add them all."
+- Errors show the server's message.
+
+### Import dialog: `components/ImportDialog.tsx`
+- The file picker accepts CSV, PDF and images.
+- **CSV:** the current flow, unchanged.
+- **PDF or image:**
+  - It calls `/import/document/preview` and shows "Reading N-page document with qwen3-vl, 45s" with the counter, plus a note that statements can take a minute or two per page.
+  - Then a review table, one row per transaction: include checkbox, date, description, amount, In/Out, and a category select (pre-filled). Every cell can be edited.
+  - "Import N transactions" sends the checked rows.
+  - The result screen is the same as for CSV.
+
+### Types: `lib/api.ts`
+Adds `DocumentPreview`, `DocumentRow`, and the new receipt scan fields.
+
+## Tests
+
+### 1. Fast unit and API tests (always run, no model; `uv run pytest`)
+`tests/test_vision.py` replaces `vision._chat` with a fake that returns canned JSON. It covers:
+- **Checking the model's answer:** direction to kind, negative amounts made positive, bad dates becoming null, zero or missing amounts dropped, merchant trimming, an unknown document type becoming "other", and pages combined in order.
+- **Retry and failure:** one retry on JSON that doesn't parse, then 502. Ollama unreachable gives 503 with the message; a missing model (404 from Ollama) gives 503 with the pull instruction.
+- **Request contents:** `think:false`, `format:"json"`, temperature 0 and the model name, as seen by the fake.
+- **`documents.py`:**
+  - A rotated JPEG (set through its rotation metadata) comes out upright.
+  - A 3000px image is shrunk to 1600px.
+  - A 3-page PDF (built with Pillow) gives 3 images.
+  - A 9-page PDF gives 400, and a text file gives 400.
+- **Receipt scan:**
+  - Returns the first transaction and saves the attachment; a PDF upload works.
+  - A statement-shaped answer returns `count > 1`.
+- **Document import:**
+  - The preview pre-fills categories (UBER → Transport).
+  - Import saves the rows tagged `imported`, a second import counts them all as duplicates, and a row without a date is an error.
+  - The existing CSV import tests still pass through `save_rows`.
+
+### 2. Real-model tests (opt-in: `uv run pytest -m model`)
+These are skipped automatically when Ollama or the model isn't available. The test documents are generated in code, so they're reproducible and nothing binary is added to the repo:
+- a clean receipt PNG,
+- a "phone photo" receipt: rotated 4 degrees, gray background, JPEG compression, slight blur,
+- a Spanish ticket with comma decimals (`TOTAL 23,45 EUR`, date `21/09/2026`),
+- an invoice PDF with line items, subtotal, tax and total due, where the total is the expected amount,
+- a 2-page bank statement PDF with 16 rows, including a deposit and opening/closing balance rows,
+- an image that isn't a financial document.
+
+The checks:
+- exact amount and date for each receipt and invoice,
+- the merchant contains the expected word,
+- `document_type` is correct,
+- the statement has exactly 16 transactions with the right amounts, money in vs out and dates, with the balance rows excluded,
+- the non-financial image returns "other" or no transactions.
+
+Each test prints its time, so slow runs are visible.
+
+### 3. End-to-end in the container
+Headless Chrome, using the puppeteer-core scripts in the scratchpad, against the real Ollama:
+- **Add form, Upload file** with the phone-style receipt JPEG: the fields fill correctly, the category is suggested, and saving puts the attachment on the transaction.
+- **Add form with a statement PDF:** shows the "use Import" hint.
+- **Import dialog with the 2-page statement PDF:**
+  - The review table shows 16 rows.
+  - Edit one amount, untick one row, and import.
+  - The counts match (15 imported).
+  - The edited amount is saved.
+  - Importing again counts every row as a duplicate.
+- **Earlier flows** (the Phase 1 and Phase 2 scripts, and the recurring-item script) all still pass.
+- **Ollama unreachable:** run a second container with `TRACEPAI_OLLAMA_URL` pointing at a closed port, and check that the form shows the "Open the Ollama app" message.
+- **Screenshots** of the scan states and the review table, on desktop and at iPhone width, in light and dark mode.
+
+### 4. On your iPhone (manual, after I report back)
+Open `http://<mac-ip>:8001` on the same Wi-Fi. Use Take photo on a real receipt, and Import on a real statement PDF.
+
+## Status (2026-09-24)
+
+Done. 49 fast tests and 6 real-model tests pass (`uv run pytest`, `uv run pytest -m model -s`). The browser flows pass in a separate test container against the real Ollama:
+- phone-style receipt read in about 10 seconds,
+- 2-page, 16-row statement read in about 72 seconds, with every row exact,
+- the Ollama-unreachable message shows correctly.
+
+Changes from the plan:
+- The review table is a responsive list rather than an HTML table: one line per row on desktop, two columns on phones.
+- The Transactions button is now "Import", since it takes statements, receipts and CSV.
+- Browser tests run in a separate container (port 8002, its own volume), never against the user's instance on 8001.

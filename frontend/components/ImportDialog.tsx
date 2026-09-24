@@ -1,16 +1,23 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { api, ApiError, ImportMapping, ImportPreview, ImportResult, Wallet } from "@/lib/api";
+import { api, ApiError, Category, DocumentPreview, DocumentRow, ImportMapping, ImportPreview, ImportResult, Wallet } from "@/lib/api";
+import { useElapsed } from "@/lib/useElapsed";
 
 const DATE_FORMATS = ["YYYY-MM-DD", "MM/DD/YYYY", "DD/MM/YYYY"];
 
+type ReviewRow = DocumentRow & { include: boolean };
+
+const isCsv = (file: File) => file.name.toLowerCase().endsWith(".csv") || file.type === "text/csv";
+
 export default function ImportDialog({
   wallets,
+  categories,
   onClose,
   onImported,
 }: {
   wallets: Wallet[];
+  categories: Category[];
   onClose: () => void;
   onImported: () => void;
 }) {
@@ -24,6 +31,10 @@ export default function ImportDialog({
   const [result, setResult] = useState<ImportResult | null>(null);
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
+  const [reading, setReading] = useState(false);
+  const readSeconds = useElapsed(reading);
+  const [review, setReview] = useState<ReviewRow[] | null>(null);
+  const [documentType, setDocumentType] = useState("");
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => e.key === "Escape" && onClose();
@@ -31,8 +42,49 @@ export default function ImportDialog({
     return () => window.removeEventListener("keydown", onKey);
   }, [onClose]);
 
+  async function readDocument(chosen: File) {
+    setFile(chosen);
+    setPreview(null);
+    setReview(null);
+    setError("");
+    setBusy(true);
+    setReading(true);
+    const form = new FormData();
+    form.append("file", chosen);
+    try {
+      const doc = await api<DocumentPreview>("/import/document/preview", { method: "POST", body: form });
+      setDocumentType(doc.document_type);
+      setReview(doc.transactions.map((t) => ({ ...t, include: true })));
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : "The document could not be read. Check that TracepAI is running.");
+    } finally {
+      setBusy(false);
+      setReading(false);
+    }
+  }
+
+  async function importReviewed() {
+    if (!review) return;
+    setError("");
+    setBusy(true);
+    try {
+      const transactions = review.filter((r) => r.include).map(({ include: _, ...row }) => row);
+      setResult(await api<ImportResult>("/import/document", { method: "POST", json: { wallet_id: Number(walletId), transactions } }));
+      onImported();
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : "The import failed. Check that TracepAI is running.");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  const updateRow = (i: number, change: Partial<ReviewRow>) =>
+    setReview((rows) => rows && rows.map((r, j) => (j === i ? { ...r, ...change } : r)));
+  const included = review?.filter((r) => r.include).length ?? 0;
+
   async function loadPreview(chosen: File) {
     setFile(chosen);
+    setReview(null);
     setError("");
     setBusy(true);
     const form = new FormData();
@@ -102,11 +154,11 @@ export default function ImportDialog({
         aria-modal="true"
         aria-labelledby="import-title"
         onClick={(e) => e.stopPropagation()}
-        className="max-h-[92vh] w-full overflow-y-auto rounded-t-3xl bg-panel p-6 sm:max-w-2xl sm:rounded-3xl"
+        className={`max-h-[92vh] w-full overflow-y-auto rounded-t-3xl bg-panel p-6 sm:rounded-3xl ${review?.length ? "sm:max-w-4xl" : "sm:max-w-2xl"}`}
       >
         <div className="mb-5 flex items-center justify-between">
           <h2 id="import-title" className="font-display text-xl font-semibold">
-            Import a bank statement
+            Import transactions
           </h2>
           <button type="button" onClick={onClose} className="text-sm text-ink-2 hover:text-ink">
             {result ? "Close" : "Cancel"}
@@ -142,12 +194,16 @@ export default function ImportDialog({
           <div className="space-y-4">
             <div className="grid gap-3 sm:grid-cols-2">
               <label className="block text-sm font-medium">
-                CSV file
+                Statement, receipt or CSV
                 <input
                   className="field mt-1"
                   type="file"
-                  accept=".csv,text/csv"
-                  onChange={(e) => e.target.files?.[0] && loadPreview(e.target.files[0])}
+                  accept=".csv,text/csv,application/pdf,image/*"
+                  disabled={busy}
+                  onChange={(e) => {
+                    const chosen = e.target.files?.[0];
+                    if (chosen) (isCsv(chosen) ? loadPreview : readDocument)(chosen);
+                  }}
                 />
               </label>
               <label className="block text-sm font-medium">
@@ -161,6 +217,101 @@ export default function ImportDialog({
                 </select>
               </label>
             </div>
+
+            {reading && (
+              <p role="status" className="flex items-center gap-2 text-sm text-ink-2">
+                <span className="h-2 w-2 animate-pulse rounded-full bg-accent motion-reduce:animate-none" />
+                Reading with qwen3-vl, {readSeconds}s. Statements take about a minute per page.
+              </p>
+            )}
+
+            {review && (
+              <>
+                <p className="text-sm text-ink-2">
+                  {review.length === 0
+                    ? "No transactions were found in this file."
+                    : `Found ${review.length} ${review.length === 1 ? "transaction" : "transactions"}${
+                        documentType === "bank_statement" ? " in this statement" : ""
+                      }. Check them, fix anything that was misread, and untick rows you don't want.`}
+                </p>
+                {review.length > 0 && (
+                  <div className="rounded-xl border border-line text-sm">
+                    <div className="hidden gap-2 border-b border-line bg-panel-sunk px-3 py-2 text-xs text-ink-2 sm:flex">
+                      <span className="w-4 shrink-0" />
+                      <div className="grid flex-1 grid-cols-[9rem_1fr_6.5rem_5rem_10rem] gap-2">
+                        <span>Date</span>
+                        <span>Description</span>
+                        <span>Amount</span>
+                        <span>In or out</span>
+                        <span>Category</span>
+                      </div>
+                    </div>
+                    <ul className="divide-y divide-line">
+                      {review.map((r, i) => (
+                        <li key={i} className={`flex items-start gap-2 px-3 py-2 ${r.include ? "" : "opacity-50"}`}>
+                          <input
+                            className="mt-2.5 h-4 w-4 shrink-0"
+                            type="checkbox"
+                            aria-label={`Include row ${i + 1}`}
+                            checked={r.include}
+                            onChange={(e) => updateRow(i, { include: e.target.checked })}
+                          />
+                          <div className="grid flex-1 grid-cols-2 gap-2 sm:grid-cols-[9rem_1fr_6.5rem_5rem_10rem]">
+                            <input
+                              className="field px-2 py-1.5"
+                              type="date"
+                              aria-label={`Row ${i + 1} date`}
+                              value={r.date ?? ""}
+                              onChange={(e) => updateRow(i, { date: e.target.value || null })}
+                            />
+                            <input
+                              className="field px-2 py-1.5"
+                              aria-label={`Row ${i + 1} description`}
+                              value={r.merchant}
+                              onChange={(e) => updateRow(i, { merchant: e.target.value })}
+                            />
+                            <input
+                              className="field px-2 py-1.5 tnum"
+                              type="number"
+                              inputMode="decimal"
+                              step="0.01"
+                              min="0.01"
+                              aria-label={`Row ${i + 1} amount`}
+                              value={r.amount}
+                              onChange={(e) => updateRow(i, { amount: Number(e.target.value) })}
+                            />
+                            <select
+                              className="field px-2 py-1.5"
+                              aria-label={`Row ${i + 1} in or out`}
+                              value={r.kind}
+                              onChange={(e) => updateRow(i, { kind: e.target.value as ReviewRow["kind"], category_id: null })}
+                            >
+                              <option value="expense">Out</option>
+                              <option value="income">In</option>
+                            </select>
+                            <select
+                              className="field col-span-2 px-2 py-1.5 sm:col-span-1"
+                              aria-label={`Row ${i + 1} category`}
+                              value={r.category_id ?? ""}
+                              onChange={(e) => updateRow(i, { category_id: e.target.value ? Number(e.target.value) : null })}
+                            >
+                              <option value="">Uncategorized</option>
+                              {categories
+                                .filter((c) => c.kind === r.kind)
+                                .map((c) => (
+                                  <option key={c.id} value={c.id}>
+                                    {c.name}
+                                  </option>
+                                ))}
+                            </select>
+                          </div>
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                )}
+              </>
+            )}
 
             {preview && mapping && (
               <>
@@ -242,9 +393,15 @@ export default function ImportDialog({
                 {error}
               </p>
             )}
-            <button className="btn btn-primary w-full py-2.5" disabled={!ready || busy} onClick={runImport}>
-              {busy ? "Working" : preview ? `Import ${preview.row_count} rows` : "Choose a file to preview"}
-            </button>
+            {review ? (
+              <button className="btn btn-primary w-full py-2.5" disabled={!included || busy} onClick={importReviewed}>
+                {busy ? "Working" : `Import ${included} ${included === 1 ? "transaction" : "transactions"}`}
+              </button>
+            ) : (
+              <button className="btn btn-primary w-full py-2.5" disabled={!ready || busy} onClick={runImport}>
+                {reading ? "Reading" : busy ? "Working" : preview ? `Import ${preview.row_count} rows` : "Choose a file to preview"}
+              </button>
+            )}
           </div>
         )}
       </div>

@@ -15,11 +15,20 @@ Open http://localhost:8000 and log in with `user` / `password`. Set `PORT` to us
 
 Data is stored in the `tracepai-data` Docker volume. Mock data is created on first start.
 
+Receipts, invoices and bank statements are read by a local vision model through [Ollama](https://ollama.com). Keep the Ollama app running with the model downloaded:
+
+```sh
+ollama pull qwen3-vl:8b
+```
+
+On Linux, start Ollama with `OLLAMA_HOST=0.0.0.0` so the container can reach it. Set `TRACEPAI_VISION_MODEL` to use another model.
+
 To scan receipts from a phone, open `http://<your-computer-ip>:8000` on the same Wi-Fi.
 
 ## Develop
 
 ```sh
-cd backend && uv run pytest
+cd backend && uv run pytest              # fast tests
+cd backend && uv run pytest -m model -s  # reads generated documents with the real model (a few minutes)
 cd frontend && npm run build
 ```

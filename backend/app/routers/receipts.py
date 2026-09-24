@@ -4,22 +4,32 @@ from pathlib import Path
 from fastapi import APIRouter, HTTPException, UploadFile
 from fastapi.responses import FileResponse
 
+from app import vision
 from app.auth import CurrentUser
 from app.db import RECEIPTS_DIR
-from app.ocr import parse_receipt, read_text
+from app.documents import is_pdf, to_images
 
 router = APIRouter(prefix="/receipts", tags=["receipts"])
 
 
 @router.post("/scan")
 def scan(file: UploadFile, user: CurrentUser):
-    if not (file.content_type or "").startswith("image/"):
-        raise HTTPException(400, "Upload an image")
-    name = f"{uuid.uuid4().hex}{Path(file.filename or '').suffix.lower() or '.jpg'}"
-    path = RECEIPTS_DIR / name
-    path.write_bytes(file.file.read())
-    text = read_text(str(path))
-    return {**parse_receipt(text), "receipt_path": name, "raw_text": text}
+    content = file.file.read()
+    images = to_images(content)
+    suffix = ".pdf" if is_pdf(content) else Path(file.filename or "").suffix.lower() or ".jpg"
+    name = f"{uuid.uuid4().hex}{suffix}"
+    (RECEIPTS_DIR / name).write_bytes(content)
+    extraction = vision.read_pages(images)
+    first = extraction.transactions[0] if extraction.transactions else None
+    return {
+        "document_type": extraction.document_type,
+        "count": len(extraction.transactions),
+        "merchant": first.merchant if first else "",
+        "date": first.date if first else None,
+        "amount": first.amount if first else None,
+        "kind": first.kind if first else "expense",
+        "receipt_path": name,
+    }
 
 
 @router.get("/{name}")

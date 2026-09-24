@@ -53,12 +53,24 @@ export type ImportResult = { imported: number; duplicates: number; errors: { row
 export type Budget = { id: number; category_id: number; monthly_limit: number };
 
 export type ReceiptScan = {
+  document_type: string;
+  count: number;
   merchant: string;
   date: string | null;
   amount: number | null;
+  kind: "income" | "expense";
   receipt_path: string;
-  raw_text: string;
 };
+
+export type DocumentRow = {
+  date: string | null;
+  merchant: string;
+  amount: number;
+  kind: "income" | "expense";
+  category_id: number | null;
+};
+
+export type DocumentPreview = { document_type: string; transactions: DocumentRow[] };
 
 export class ApiError extends Error {}
 

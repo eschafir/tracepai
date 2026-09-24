@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useState } from "react";
 import Shell from "@/components/Shell";
 import ImportDialog from "@/components/ImportDialog";
+import ReceiptViewer, { ReceiptButton } from "@/components/ReceiptViewer";
 import TransactionModal from "@/components/TransactionModal";
 import { api, Category, Transaction, Wallet } from "@/lib/api";
 import { money, shortDate, slotColor } from "@/lib/format";
@@ -20,6 +21,7 @@ export default function TransactionsPage() {
     wallet: typeof window === "undefined" ? "" : (new URLSearchParams(window.location.search).get("wallet") ?? ""),
   }));
   const [importing, setImporting] = useState(false);
+  const [viewing, setViewing] = useState<Transaction | null>(null);
   const [editing, setEditing] = useState<Transaction | "new" | null>(null);
   const [confirmDelete, setConfirmDelete] = useState<number | null>(null);
 
@@ -117,7 +119,7 @@ export default function TransactionsPage() {
       <div className="mb-4 flex flex-wrap items-end gap-3">
         <h1 className="mr-auto w-full font-display sm:w-auto text-3xl font-bold tracking-tight">Transactions</h1>
         <button className="btn" onClick={() => setImporting(true)}>
-          Import CSV
+          Import
         </button>
         <a className="btn" href="/api/export?format=csv">
           Export CSV
@@ -183,6 +185,7 @@ export default function TransactionsPage() {
                   <th className="hidden px-3 py-3 sm:px-4 font-medium sm:table-cell">Category</th>
                   <th className="hidden px-3 py-3 sm:px-4 font-medium md:table-cell">Wallet</th>
                   <th className="hidden px-3 py-3 sm:px-4 font-medium md:table-cell">Tags</th>
+                  <th className="hidden px-3 py-3 text-center font-medium sm:table-cell sm:px-4">Receipt</th>
                   <th className="px-3 py-3 sm:px-4 text-right font-medium">Amount</th>
                   <th className="hidden px-3 py-3 sm:px-4 sm:table-cell">
                     <span className="sr-only">Actions</span>
@@ -194,7 +197,18 @@ export default function TransactionsPage() {
                   <tr key={t.id} className="border-b border-line last:border-0 hover:bg-panel-sunk">
                     <td className="px-3 py-3 sm:px-4 whitespace-nowrap tnum">{shortDate(t.date)}</td>
                     <td className="px-3 py-3 sm:px-4">
-                      {t.merchant || <span className="text-ink-2">{t.kind === "transfer" ? "Transfer" : "No merchant"}</span>}
+                      <span className="flex items-center gap-2">
+                        <span>
+                          {t.merchant || (
+                            <span className="text-ink-2">{t.kind === "transfer" ? "Transfer" : "No merchant"}</span>
+                          )}
+                        </span>
+                        {t.receipt_path && (
+                          <span className="sm:hidden">
+                            <ReceiptButton label={t.merchant || "this transaction"} onClick={() => setViewing(t)} />
+                          </span>
+                        )}
+                      </span>
                       {t.notes && <span className="block max-w-32 truncate text-xs sm:max-w-56 text-ink-2">{t.notes}</span>}
                       <span className="block text-xs text-ink-2 sm:hidden">{categoryNames(t)}</span>
                     </td>
@@ -206,6 +220,11 @@ export default function TransactionsPage() {
                         .filter(Boolean)
                         .map((tag) => `#${tag}`)
                         .join(" ")}
+                    </td>
+                    <td className="hidden px-3 py-2 text-center sm:table-cell sm:px-4">
+                      {t.receipt_path && (
+                        <ReceiptButton label={t.merchant || "this transaction"} onClick={() => setViewing(t)} />
+                      )}
                     </td>
                     <td
                       className={`px-3 py-3 text-right font-medium whitespace-nowrap tnum sm:px-4 ${
@@ -237,9 +256,17 @@ export default function TransactionsPage() {
           }}
         />
       )}
+      {viewing?.receipt_path && (
+        <ReceiptViewer
+          path={viewing.receipt_path}
+          title={`${viewing.merchant || "Receipt"}, ${shortDate(viewing.date)}`}
+          onClose={() => setViewing(null)}
+        />
+      )}
       {importing && (
         <ImportDialog
           wallets={wallets}
+          categories={categories}
           onClose={() => setImporting(false)}
           onImported={load}
         />

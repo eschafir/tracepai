@@ -3,6 +3,7 @@
 import { useEffect, useRef, useState } from "react";
 import { api, ApiError, Category, Frequency, Kind, ReceiptScan, Transaction, TransactionInput, Wallet } from "@/lib/api";
 import { iso, money } from "@/lib/format";
+import { useElapsed } from "@/lib/useElapsed";
 
 const KINDS: { value: Kind; label: string }[] = [
   { value: "expense", label: "Expense" },
@@ -44,7 +45,10 @@ export default function TransactionModal({
   const [status, setStatus] = useState("");
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
+  const cameraInput = useRef<HTMLInputElement>(null);
   const fileInput = useRef<HTMLInputElement>(null);
+  const [scanning, setScanning] = useState(false);
+  const scanSeconds = useElapsed(scanning);
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => e.key === "Escape" && onClose();
@@ -55,9 +59,9 @@ export default function TransactionModal({
   const options = categories.filter((c) => c.kind === kind);
   const isTransfer = kind === "transfer";
 
-  async function suggestCategory(name: string) {
-    if (isTransfer || categoryId || splits.length || !name.trim()) return;
-    const params = new URLSearchParams({ merchant: name, kind });
+  async function suggestCategory(name: string, forKind: Kind = kind, current = categoryId) {
+    if (forKind === "transfer" || current || splits.length || !name.trim()) return;
+    const params = new URLSearchParams({ merchant: name, kind: forKind });
     const suggestion = await api<{ category_id: number; source: string } | null>(`/categories/suggest?${params}`);
     if (suggestion) {
       setCategoryId(String(suggestion.category_id));
@@ -69,8 +73,9 @@ export default function TransactionModal({
 
   async function scanReceipt(file: File) {
     setBusy(true);
+    setScanning(true);
     setError("");
-    setStatus("Reading receipt");
+    setStatus("");
     const form = new FormData();
     form.append("file", file);
     try {
@@ -78,21 +83,25 @@ export default function TransactionModal({
       setReceiptPath(scan.receipt_path);
       if (scan.amount) setAmount(String(scan.amount));
       if (scan.date) setDate(scan.date);
+      setKind(scan.kind);
       if (scan.merchant) {
         setMerchant(scan.merchant);
-        suggestCategory(scan.merchant);
+        setCategoryId("");
+        suggestCategory(scan.merchant, scan.kind, "");
       }
-      setKind("expense");
+      const found = scan.amount
+        ? "Read. Check the details before saving."
+        : "Attached, but no total was found. Enter the amount yourself.";
       setStatus(
-        scan.amount
-          ? "Receipt read. Check the amount, date and merchant before saving."
-          : "Receipt attached, but no total was found. Enter the amount yourself.",
+        scan.count > 1
+          ? `${found} This looks like a bank statement with ${scan.count} transactions. Use Import on the Transactions page to add them all.`
+          : found,
       );
     } catch (err) {
-      setStatus("");
-      setError(err instanceof ApiError ? err.message : "The receipt could not be read. Try a sharper photo.");
+      setError(err instanceof ApiError ? err.message : "The document could not be read. Try a sharper photo.");
     } finally {
       setBusy(false);
+      setScanning(false);
     }
   }
 
@@ -252,16 +261,35 @@ export default function TransactionModal({
         {kind === "expense" && (
           <div className="mt-4">
             <input
-              ref={fileInput}
+              ref={cameraInput}
               type="file"
               accept="image/*"
               capture="environment"
               className="hidden"
               onChange={(e) => e.target.files?.[0] && scanReceipt(e.target.files[0])}
             />
-            <button type="button" className="btn w-full" onClick={() => fileInput.current?.click()} disabled={busy}>
-              {receiptPath ? "Scan a different receipt" : "Scan receipt"}
-            </button>
+            <input
+              ref={fileInput}
+              type="file"
+              accept="image/*,application/pdf"
+              className="hidden"
+              aria-label="Upload a receipt, ticket or invoice"
+              onChange={(e) => e.target.files?.[0] && scanReceipt(e.target.files[0])}
+            />
+            <div className="grid grid-cols-2 gap-2">
+              <button type="button" className="btn" onClick={() => cameraInput.current?.click()} disabled={busy}>
+                Take photo
+              </button>
+              <button type="button" className="btn" onClick={() => fileInput.current?.click()} disabled={busy}>
+                Upload file
+              </button>
+            </div>
+            {scanning && (
+              <p role="status" className="mt-3 flex items-center gap-2 text-sm text-ink-2">
+                <span className="h-2 w-2 animate-pulse rounded-full bg-accent motion-reduce:animate-none" />
+                Reading with qwen3-vl, {scanSeconds}s
+              </p>
+            )}
             {receiptPath && (
               <a
                 href={`/api/receipts/${receiptPath}`}
