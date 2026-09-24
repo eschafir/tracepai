@@ -437,3 +437,149 @@ Changes from the plan:
 - The review table is a responsive list rather than an HTML table: one line per row on desktop, two columns on phones.
 - The Transactions button is now "Import", since it takes statements, receipts and CSV.
 - Browser tests run in a separate container (port 8002, its own volume), never against the user's instance on 8001.
+
+---
+
+# TracepAI: Savings goals, locations and map, monthly summary, undo delete
+
+## Context
+These are the next features from the Spendee comparison. CSV import is already built, so this batch skips it (your decision). Decisions made:
+- **Location:** search a place or address (looked up on OpenStreetMap), plus the GPS position inside a receipt photo when the phone includes it. "Use my location" only works on the Mac (localhost), because Safari blocks it on plain-http pages like `http://<mac-ip>:8001`. No HTTPS setup.
+- **Goals:** each goal keeps its own contributions ("Add $200"), with a progress bar and the monthly amount needed to reach the date. Adding to a goal doesn't move money between wallets.
+
+**Your real data is on port 8001, so the database is not reset this time.**
+- New tables are created automatically on start-up.
+- New columns on existing tables are added by a small start-up step. There's no reset and no manual migration.
+- Before I deploy to 8001, I back up `/data/tracepai.db` to the scratchpad.
+- All testing runs in a separate container (port 8002, its own volume), per the saved rule.
+
+## Backend
+
+### Adding new columns: `app/db.py`
+- After `create_all`, `add_missing_columns()` compares each table's model with SQLite's `PRAGMA table_info`.
+- For each column the database lacks, it runs `ALTER TABLE ... ADD COLUMN`. Every new column is nullable, so existing rows stay valid.
+- It is generic, so future nullable columns need no new code.
+
+### Savings goals
+- **Tables (`app/models.py`):**
+  - `Goal`: id, user_id, name, target_amount (> 0), target_date (optional), color_slot (1-8).
+  - `GoalContribution`: id, goal_id, date, amount, note. The amount can be negative, which means taking money out of the goal.
+- **API (`app/routers/goals.py`):**
+  - `GET /goals` returns each goal with `saved`, `percent`, `remaining`, `months_left` and `monthly_needed`. `monthly_needed` is remaining divided by the whole months until target_date (at least 1); it's null when there's no date or the goal is reached.
+  - Create, update and delete goals.
+  - `GET /goals/{id}/contributions` lists the history.
+  - `POST /goals/{id}/contributions` records an add or a take-out, and `DELETE /goals/contributions/{id}` removes one.
+  - Deleting a goal deletes its contributions.
+
+### Locations
+- **New Transaction columns:** `place` (text), `lat` and `lng` (numbers). All three are optional and can be edited like any other field.
+- **Place search (`app/routers/places.py`):**
+  - `GET /places/search?q=` is passed on to OpenStreetMap's lookup service (Nominatim) and returns up to 5 results: `{name, address, lat, lng}`.
+  - `GET /places/reverse?lat=&lng=` returns a place name for a position.
+  - Requests go out from the backend with a `User-Agent: TracepAI` header, as Nominatim's usage policy requires. Searches happen only when you press Search, never while you type, to respect its one-request-per-second limit.
+  - If the lookup service can't be reached, you get a clear 503 message; nothing else breaks.
+- **Photo GPS (`app/documents.py`):**
+  - `gps_from_image(content)` reads the photo's GPS data with Pillow, `getexif().get_ifd(0x8825)`, converting degrees/minutes/seconds and the N/S/E/W reference into a latitude and longitude.
+  - `POST /receipts/scan` also returns `lat` and `lng` when the photo has them.
+  - Many iPhone uploads strip GPS, so this is a bonus, not the main way to add a location.
+- **Analytics:** `GET /analytics/places?start&end&wallet` returns the transactions that have a location, for the map.
+
+### Monthly summary (`app/routers/analytics.py`)
+`GET /analytics/summary?month=YYYY-MM&wallet=` returns, reusing `expense_by_category`, `month_bounds` and `query_transactions`:
+- income, expenses, net, and the savings rate (net divided by income),
+- spending vs the same number of days last month: amount and percent change,
+- the top category (name, total, share),
+- the biggest purchase (merchant, amount, date),
+- the most visited merchant (name, count),
+- budgets over their limit (names),
+- whether the month is still in progress.
+
+### Undo delete
+No new endpoint. Undo sends the deleted transaction back through the existing `POST /transactions` (splits, receipt, location and tags included). It gets a new id; the only thing it doesn't keep is its link to a recurring rule.
+
+### Mock data (`app/seed.py`; fresh installs and the test container only)
+- Coordinates for the seeded San Francisco merchants.
+- A "Lisbon trip" goal ($2,000 by next spring) with a few contributions.
+- An "Emergency fund" goal with no date.
+
+## Frontend
+
+### Goals page: new `app/goals/page.tsx`, plus a Goals link in the nav
+- **Goal cards:** name and color, then "$1,200 of $2,000", a progress bar in the goal's color, and "Save $200 a month to reach it by Mar 2027" (or "Reached"). Also Add money and Take out (amount plus an optional note), history, edit and delete.
+- **New goal form:** name, target, optional date, color.
+- **Dashboard:** a small "Goals" panel with each goal's progress bar and a link to the page.
+
+### Location in the add form: `components/TransactionModal.tsx`
+- **Place field,** under "Add notes, tags, splits or repeat":
+  - a text box with a Search button; pick one of up to 5 results,
+  - or "Use my location" (shown only where the browser allows it: `window.isSecureContext && navigator.geolocation`), which then looks up the place name,
+  - or the photo GPS after a scan, labeled "Location from the photo",
+  - with Remove to clear it.
+- The chosen place shows as a pin icon, then the name.
+
+### Map on Transactions: `app/transactions/page.tsx` and a new `components/SpendingMap.tsx`
+- **List | Map switch.** The map uses Leaflet and `react-leaflet` with OpenStreetMap tiles. It's loaded only in the browser (`next/dynamic`, `ssr:false`), because Leaflet needs `window`.
+- **Markers:** one circle per transaction that has a location, colored by category, with a hover or click popup showing merchant, amount, date and category. The map zooms to fit all markers, and the wallet and date filters also apply to the map.
+- **Empty map:** "No transactions with a location in this period. Add a place when you add or edit a transaction."
+- **In the list,** transactions with a place show a small pin and the place name under the merchant.
+
+### Monthly summary on the dashboard: `app/page.tsx`
+- A "September so far" panel (just "August" for a finished month), with previous and next month arrows. It shows:
+  - Spent $3,004, 12% more than by this point last month.
+  - Top category: Rent, $1,450 (48%).
+  - Biggest purchase: IKEA, $210 on Aug 29.
+  - Most visited: Blue Bottle, 6 times.
+  - Over budget: Groceries, Dining.
+  - Kept 31% of income.
+- These are sentences, not charts. Colors mean something only with a label (green for less spending, red for more). The panel respects the dashboard's wallet picker.
+
+### Undo instead of confirming a delete: `app/transactions/page.tsx`, plus a new `components/Toast.tsx`
+- Delete removes the row at once and shows "Transaction deleted." with an Undo button, for 6 seconds, at the bottom center of the page, readable by screen readers.
+- Undo sends the saved copy back and reloads the list. The two-step "Delete / Keep" confirmation goes away.
+- A second delete while a toast is showing replaces it, and that one gets its own Undo.
+
+## Tests
+
+### Backend (`uv run pytest`)
+- **Adding columns:** build a database with the old transaction table (no place, lat or lng) plus rows, run `init_db`, and check that the columns exist and the rows are unchanged.
+- **Goals:**
+  - create a goal, then add and take out money; saved and percent are correct,
+  - `monthly_needed`: 3 months left and $600 remaining gives $200; a reached goal and a goal with no date give null,
+  - deleting a goal removes its contributions,
+  - validation: a zero target or a slot of 9 is rejected.
+- **Places:**
+  - The search and reverse endpoints are tested with a fake network call: the results are reshaped, the User-Agent header is sent, and an unreachable lookup service gives 503.
+- **Photo GPS:**
+  - A JPEG with a known position (a fixture built with Pillow) reads back to within 1e-5 degrees, and a photo without GPS gives None.
+  - The scan endpoint returns lat and lng (with a fake model).
+- **Transactions:** place, lat and lng are saved and edited; `analytics/places` returns only rows that have a location and follows the date and wallet filters.
+- **Summary:**
+  - For a controlled month in the test data: expenses and income match the transaction list, the top category and biggest purchase are right, the percent change matches, and the over-budget list matches `analytics/budgets`.
+  - A month with no data returns zeros and nulls, not errors.
+- **Undo:** re-posting a deleted split transaction recreates the same fields and splits.
+
+### Browser, in the test container on 8002 (puppeteer scripts in the scratchpad)
+- **Goals:** create "Laptop", $1,500 by a date 3 months out; add $300; the bar shows 20% and "Save $400 a month"; take out $100; delete a contribution; delete the goal. The dashboard panel matches.
+- **Location:**
+  - search "Ferry Building San Francisco" (one real Nominatim call), pick the first result, save; the list shows the pin and place,
+  - edit the transaction and remove the place,
+  - scan a receipt photo with GPS in its data (real qwen3-vl): "Location from the photo" appears.
+- **Map:** switch to Map; the number of markers equals the transactions with a location in the period; clicking a marker shows its popup; changing the period changes the markers.
+- **Summary:** the panel's numbers equal `/api/analytics/summary`; the previous-month arrow shows August.
+- **Undo:** delete a split transaction and press Undo; the row and its splits come back. Delete another and let the toast expire; it stays deleted.
+- **Earlier flows:** the earlier scripts (Phase 1 and 2, recurring, document import, receipt viewer) still pass.
+- **Screenshots** on desktop and at iPhone width, in light and dark mode.
+
+### Deploying to your app on 8001
+1. Back up `tracepai.db`.
+2. Rebuild and restart, keeping the volume.
+3. Check that the transaction count is unchanged and the new columns exist.
+4. Open the dashboard and make sure it loads.
+
+## Status (2026-09-24)
+
+Built and tested: 64 backend tests pass, and the browser flows pass in the test container on port 8002.
+
+Changes from the plan:
+- The map uses the transaction list the page already loads, so every list filter also applies to the map. The separate `/analytics/places` endpoint was dropped.
+- Undo shows "Deleted <merchant>." with Undo, rather than "Transaction deleted."

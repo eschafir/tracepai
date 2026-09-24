@@ -106,6 +106,9 @@ def check_transfer(entry: Entry, splits: list | None = None):
 class TransactionBase(Entry):
     date: dt.date
     receipt_path: str | None = None
+    place: str | None = None
+    lat: float | None = Field(default=None, ge=-90, le=90)
+    lng: float | None = Field(default=None, ge=-180, le=180)
     recurring_id: int | None = Field(default=None, foreign_key="recurringrule.id")
 
 
@@ -155,3 +158,26 @@ class RecurringBase(Entry):
 class RecurringRule(RecurringBase, table=True):
     id: int | None = Field(default=None, primary_key=True)
     user_id: int = Field(foreign_key="user.id", index=True)
+
+
+class GoalBase(SQLModel):
+    name: str
+    target_amount: float = Field(gt=0)
+    target_date: dt.date | None = None
+    color_slot: int = Field(default=3, ge=1, le=8)
+
+
+class Goal(GoalBase, table=True):
+    id: int | None = Field(default=None, primary_key=True)
+    user_id: int = Field(foreign_key="user.id", index=True)
+
+
+class ContributionBase(SQLModel):
+    date: dt.date
+    amount: float
+    note: str = ""
+
+
+class GoalContribution(ContributionBase, table=True):
+    id: int | None = Field(default=None, primary_key=True)
+    goal_id: int = Field(foreign_key="goal.id", index=True, ondelete="CASCADE")

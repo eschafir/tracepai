@@ -18,7 +18,7 @@ Data is stored in the `tracepai-data` Docker volume. Mock data is created on fir
 Receipts, invoices and bank statements are read by a local vision model through [Ollama](https://ollama.com). Keep the Ollama app running with the model downloaded:
 
 ```sh
-ollama pull qwen3-vl:8b
+ollama pull qwen3-vl:2b
 ```
 
 On Linux, start Ollama with `OLLAMA_HOST=0.0.0.0` so the container can reach it. Set `TRACEPAI_VISION_MODEL` to use another model.

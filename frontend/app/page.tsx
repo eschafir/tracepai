@@ -17,7 +17,9 @@ import {
   Panel,
   RankedBars,
 } from "@/components/charts";
-import { api, Category, Upcoming, Wallet } from "@/lib/api";
+import MonthSummary from "@/components/MonthSummary";
+import { GoalsPanel } from "@/components/goals";
+import { api, Category, Goal, Upcoming, Wallet } from "@/lib/api";
 import { money, Period, periodRange, shortDate, slotColor } from "@/lib/format";
 
 type Merchants = {
@@ -34,6 +36,7 @@ type Data = {
   comparison: ComparisonPoint[];
   wallets: Wallet[];
   upcoming: Upcoming[];
+  goals: Goal[];
 };
 
 const PERIODS: { value: Period; label: string }[] = [
@@ -53,7 +56,7 @@ export default function Dashboard() {
   const load = useCallback(async () => {
     const scope = wallet ? `wallet=${wallet}` : "";
     const range = new URLSearchParams({ ...periodRange(period), ...(wallet && { wallet }) });
-    const [balance, cats, cashflow, budgets, merchants, comparison, categoryList, wallets, upcoming] = await Promise.all([
+    const [balance, cats, cashflow, budgets, merchants, comparison, categoryList, wallets, upcoming, goals] = await Promise.all([
       api<BalancePoint[]>(`/analytics/balance?${scope}`),
       api<CategoryTotal[]>(`/analytics/categories?${range}`),
       api<CashflowPoint[]>(`/analytics/cashflow?${range}&bucket=${bucket}`),
@@ -63,8 +66,9 @@ export default function Dashboard() {
       api<Category[]>("/categories"),
       api<Wallet[]>("/wallets"),
       api<Upcoming[]>("/recurring/upcoming?days=14"),
+      api<Goal[]>("/goals"),
     ]);
-    setData({ balance, categories: cats, cashflow, budgets, merchants, comparison, wallets, upcoming });
+    setData({ balance, categories: cats, cashflow, budgets, merchants, comparison, wallets, upcoming, goals });
     setCategories(categoryList);
   }, [period, bucket, wallet]);
 
@@ -145,6 +149,13 @@ export default function Dashboard() {
               )}
             </div>
           </section>
+
+          <div className="grid gap-4 lg:grid-cols-2">
+            <MonthSummary wallet={wallet} refresh={data} />
+            <Panel title="Goals" note={<a className="text-accent" href="/goals/">All goals</a>}>
+              <GoalsPanel goals={data.goals} />
+            </Panel>
+          </div>
 
           <div
             role="radiogroup"

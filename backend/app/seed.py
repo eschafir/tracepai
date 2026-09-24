@@ -8,6 +8,8 @@ from app.models import (
     Budget,
     Category,
     CategoryKind,
+    Goal,
+    GoalContribution,
     Kind,
     RecurringRule,
     Split,
@@ -28,6 +30,22 @@ EXPENSES = {
     "Subscriptions": (6, 80, [], (0, 0), 0),
     "Shopping": (7, 300, ["Amazon", "Uniqlo", "Target"], (15, 180), 3),
     "Household": (8, 120, ["Target", "IKEA", "Home Depot"], (10, 90), 2),
+}
+PLACES = {
+    # merchant: (place, lat, lng)
+    "Whole Foods": ("Whole Foods Market, California St", 37.7907, -122.4213),
+    "Trader Joe's": ("Trader Joe's, 4th St", 37.7849, -122.4057),
+    "Safeway": ("Safeway, Market St", 37.7686, -122.4270),
+    "Blue Bottle": ("Blue Bottle Coffee, Mint Plaza", 37.7823, -122.4078),
+    "Chipotle": ("Chipotle, Market St", 37.7894, -122.4014),
+    "Sushi Ran": ("Sushi Ran, Sausalito", 37.8591, -122.4853),
+    "Tartine": ("Tartine Bakery, Guerrero St", 37.7614, -122.4241),
+    "Shell": ("Shell, 9th St", 37.7743, -122.4107),
+    "BART": ("Powell St BART", 37.7844, -122.4079),
+    "Target": ("Target, Mission St", 37.7845, -122.4033),
+    "Uniqlo": ("Uniqlo, Powell St", 37.7856, -122.4078),
+    "IKEA": ("IKEA Emeryville", 37.8313, -122.2923),
+    "Home Depot": ("The Home Depot, Bayshore Blvd", 37.7474, -122.4063),
 }
 SUBSCRIPTIONS = [("Netflix", 15.49, 5), ("Spotify", 11.99, 12), ("iCloud", 2.99, 20)]
 
@@ -54,8 +72,12 @@ def seed(session: Session):
         session.add(Budget(user_id=user.id, category_id=categories[name].id, monthly_limit=limit))
 
     def add(date, amount, kind, merchant, wallet, category=None, splits=(), **extra):
+        place, lat, lng = PLACES.get(merchant, (None, None, None))
         session.add(
             Transaction(
+                place=place,
+                lat=lat,
+                lng=lng,
                 user_id=user.id,
                 date=date,
                 amount=round(amount, 2),
@@ -128,5 +150,14 @@ def seed(session: Session):
 
     add(first + dt.timedelta(days=40), 1850, Kind.expense, "United Airlines", checking, categories["Shopping"], tags="vacation", notes="Flights to Lisbon")
     add(first + dt.timedelta(days=95), 1299, Kind.expense, "Apple Store", checking, categories["Shopping"], tags="workReimbursable", notes="Laptop")
+    trip = Goal(user_id=user.id, name="Lisbon trip", target_amount=2000, color_slot=2,
+                target_date=(today.replace(day=1) + dt.timedelta(days=190)).replace(day=1))
+    fund = Goal(user_id=user.id, name="Emergency fund", target_amount=10000, color_slot=3)
+    session.add_all([trip, fund])
+    session.flush()
+    for months_ago, amount in ((3, 300), (2, 300), (1, 400)):
+        session.add(GoalContribution(goal_id=trip.id, amount=amount, date=today - dt.timedelta(days=30 * months_ago), note="Monthly"))
+    session.add(GoalContribution(goal_id=fund.id, amount=2500, date=first, note="Starting amount"))
+    session.add(GoalContribution(goal_id=fund.id, amount=500, date=today - dt.timedelta(days=20), note="Bonus"))
     session.commit()
     post_due(session, user.id, today)

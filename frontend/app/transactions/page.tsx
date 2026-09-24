@@ -1,12 +1,21 @@
 "use client";
 
+import dynamic from "next/dynamic";
 import { useCallback, useEffect, useState } from "react";
 import Shell from "@/components/Shell";
+import { PinIcon } from "@/components/LocationField";
+import Toast from "@/components/Toast";
 import ImportDialog from "@/components/ImportDialog";
 import ReceiptViewer, { ReceiptButton } from "@/components/ReceiptViewer";
 import TransactionModal from "@/components/TransactionModal";
 import { api, Category, Transaction, Wallet } from "@/lib/api";
 import { money, shortDate, slotColor } from "@/lib/format";
+
+// Leaflet needs the browser's window, so the map only loads on the client.
+const SpendingMap = dynamic(() => import("@/components/SpendingMap"), {
+  ssr: false,
+  loading: () => <p className="p-10 text-center text-ink-2">Loading map</p>,
+});
 
 export default function TransactionsPage() {
   const [transactions, setTransactions] = useState<Transaction[] | null>(null);
@@ -23,7 +32,8 @@ export default function TransactionsPage() {
   const [importing, setImporting] = useState(false);
   const [viewing, setViewing] = useState<Transaction | null>(null);
   const [editing, setEditing] = useState<Transaction | "new" | null>(null);
-  const [confirmDelete, setConfirmDelete] = useState<number | null>(null);
+  const [view, setView] = useState<"list" | "map">("list");
+  const [deleted, setDeleted] = useState<Transaction | null>(null);
 
   const load = useCallback(async () => {
     const params = new URLSearchParams(Object.entries(filters).filter(([, v]) => v));
@@ -47,11 +57,22 @@ export default function TransactionsPage() {
   const setFilter = (key: keyof typeof filters) => (e: React.ChangeEvent<HTMLInputElement | HTMLSelectElement>) =>
     setFilters({ ...filters, [key]: e.target.value });
 
-  async function remove(id: number) {
-    await api(`/transactions/${id}`, { method: "DELETE" });
-    setConfirmDelete(null);
+  async function remove(t: Transaction) {
+    setTransactions((rows) => rows && rows.filter((r) => r.id !== t.id));
+    await api(`/transactions/${t.id}`, { method: "DELETE" });
+    setDeleted(t);
     load();
   }
+
+  async function undoDelete() {
+    if (!deleted) return;
+    const { id: _id, recurring_id: _recurring, ...body } = deleted;
+    setDeleted(null);
+    await api("/transactions", { method: "POST", json: body });
+    load();
+  }
+
+  const clearToast = useCallback(() => setDeleted(null), []);
 
   const categoryNames = (t: Transaction) => {
     if (t.kind === "transfer") return `Transfer to ${walletName(t.to_wallet_id)}`;
@@ -60,21 +81,12 @@ export default function TransactionsPage() {
   };
 
   function actions(t: Transaction) {
-    return confirmDelete === t.id ? (
-      <>
-        <button className="mr-3 font-medium text-critical" onClick={() => remove(t.id)}>
-          Delete
-        </button>
-        <button className="text-ink-2" onClick={() => setConfirmDelete(null)}>
-          Keep
-        </button>
-      </>
-    ) : (
+    return (
       <>
         <button className="mr-3 text-accent" onClick={() => setEditing(t)}>
           Edit
         </button>
-        <button className="text-ink-2 hover:text-critical" onClick={() => setConfirmDelete(t.id)}>
+        <button className="text-ink-2 hover:text-critical" onClick={() => remove(t)}>
           Delete
         </button>
       </>
@@ -170,12 +182,28 @@ export default function TransactionsPage() {
         </label>
       </div>
 
+      <div role="radiogroup" aria-label="View" className="mb-3 flex w-fit gap-1 rounded-full bg-panel p-1 text-sm font-medium">
+        {(["list", "map"] as const).map((v) => (
+          <button
+            key={v}
+            role="radio"
+            aria-checked={view === v}
+            onClick={() => setView(v)}
+            className={`rounded-full px-3.5 py-1.5 ${view === v ? "bg-accent text-accent-ink" : "text-ink-2"}`}
+          >
+            {v === "list" ? "List" : "Map"}
+          </button>
+        ))}
+      </div>
+
       {transactions && (
         <div className="overflow-x-auto rounded-2xl bg-panel">
           {transactions.length === 0 ? (
             <p className="p-10 text-center text-ink-2">
               No transactions match these filters. Clear a filter or add a transaction.
             </p>
+          ) : view === "map" ? (
+            <SpendingMap transactions={transactions} categories={byId} />
           ) : (
             <table className="w-full text-sm">
               <thead className="text-left text-ink-2">
@@ -210,6 +238,12 @@ export default function TransactionsPage() {
                         )}
                       </span>
                       {t.notes && <span className="block max-w-32 truncate text-xs sm:max-w-56 text-ink-2">{t.notes}</span>}
+                      {t.place && (
+                        <span className="flex items-center gap-1 text-xs text-ink-2">
+                          <PinIcon size={12} />
+                          <span className="max-w-32 truncate sm:max-w-56">{t.place}</span>
+                        </span>
+                      )}
                       <span className="block text-xs text-ink-2 sm:hidden">{categoryNames(t)}</span>
                     </td>
                     <td className="hidden px-3 py-3 sm:px-4 sm:table-cell">{categoryCell(t)}</td>
@@ -254,6 +288,15 @@ export default function TransactionsPage() {
             setEditing(null);
             load();
           }}
+        />
+      )}
+      {deleted && (
+        <Toast
+          key={deleted.id}
+          message={`Deleted ${deleted.merchant || "transaction"}.`}
+          action="Undo"
+          onAction={undoDelete}
+          onDone={clearToast}
         />
       )}
       {viewing?.receipt_path && (

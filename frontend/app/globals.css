@@ -129,3 +129,14 @@ body {
     appearance: textfield;
   }
 }
+
+/* Map tiles are light; dim them in dark mode so the map doesn't glare. */
+@media (prefers-color-scheme: dark) {
+  :root:where(:not([data-theme="light"])) .spending-map .leaflet-tile-pane {
+    filter: invert(1) hue-rotate(180deg) brightness(0.85) contrast(0.9);
+  }
+}
+
+.spending-map {
+  z-index: 0;
+}

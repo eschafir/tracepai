@@ -144,3 +144,54 @@ def balance(db: DbSession, user: CurrentUser, wallet: int | None = None):
         running += daily[date]
         out.append({"date": date, "balance": round(running, 2)})
     return out
+
+
+@router.get("/summary")
+def summary(db: DbSession, user: CurrentUser, month: str | None = None, wallet: int | None = None):
+    start, end = month_bounds(month)
+    today = dt.date.today()
+    in_progress = start <= today <= end
+    cutoff = today.day if in_progress else end.day
+    prev_start, prev_end = month_bounds((start - dt.timedelta(days=1)).strftime("%Y-%m"))
+    prev_cutoff = prev_start.replace(day=min(cutoff, prev_end.day))
+
+    txns = query_transactions(db, user, start, end, wallet=wallet)
+    expenses = [t for t in txns if t.kind == Kind.expense]
+    income = round(sum(t.amount for t in txns if t.kind == Kind.income), 2)
+    spent = round(sum(t.amount for t in expenses), 2)
+    spent_to_date = sum(t.amount for t in expenses if t.date.day <= cutoff)
+    prev_to_date = sum(
+        t.amount for t in query_transactions(db, user, prev_start, prev_cutoff, wallet=wallet) if t.kind == Kind.expense
+    )
+
+    cats = {c.id: c.name for c in db.exec(select(Category).where(Category.user_id == user.id))}
+    by_category = expense_by_category(txns)
+    top_id = max(by_category, key=by_category.get) if by_category else None
+    biggest = max(expenses, key=lambda t: t.amount) if expenses else None
+    visits = defaultdict(int)
+    for t in expenses:
+        if t.merchant:
+            visits[t.merchant] += 1
+    visited = max(visits, key=visits.get) if visits else None
+
+    return {
+        "month": start.strftime("%Y-%m"),
+        "in_progress": in_progress,
+        "income": income,
+        "expenses": spent,
+        "net": round(income - spent, 2),
+        "savings_rate": round(100 * (income - spent) / income, 1) if income else None,
+        "compared_days": cutoff,
+        "change": round(spent_to_date - prev_to_date, 2),
+        "change_percent": round(100 * (spent_to_date - prev_to_date) / prev_to_date, 1) if prev_to_date else None,
+        "top_category": {
+            "name": cats.get(top_id, "Uncategorized"),
+            "total": round(by_category[top_id], 2),
+            "share": round(100 * by_category[top_id] / spent, 1) if spent else None,
+        }
+        if by_category
+        else None,
+        "biggest": {"merchant": biggest.merchant, "amount": biggest.amount, "date": biggest.date} if biggest else None,
+        "most_visited": {"merchant": visited, "count": visits[visited]} if visited else None,
+        "over_budget": [b["name"] for b in budgets(db, user, start.strftime("%Y-%m")) if b["percent"] >= 100],
+    }

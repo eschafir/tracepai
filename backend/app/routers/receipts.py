@@ -7,7 +7,7 @@ from fastapi.responses import FileResponse
 from app import vision
 from app.auth import CurrentUser
 from app.db import RECEIPTS_DIR
-from app.documents import is_pdf, to_images
+from app.documents import gps_from_image, is_pdf, to_images
 
 router = APIRouter(prefix="/receipts", tags=["receipts"])
 
@@ -21,7 +21,10 @@ def scan(file: UploadFile, user: CurrentUser):
     (RECEIPTS_DIR / name).write_bytes(content)
     extraction = vision.read_pages(images)
     first = extraction.transactions[0] if extraction.transactions else None
+    position = None if is_pdf(content) else gps_from_image(content)
     return {
+        "lat": position[0] if position else None,
+        "lng": position[1] if position else None,
         "document_type": extraction.document_type,
         "count": len(extraction.transactions),
         "merchant": first.merchant if first else "",

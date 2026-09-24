@@ -97,7 +97,7 @@ def test_gives_up_after_two_bad_replies(fake_model):
     "error, status, text",
     [
         (urllib.error.URLError("Connection refused"), 503, "Open the Ollama app"),
-        (urllib.error.HTTPError("u", 404, "not found", {}, None), 503, "ollama pull qwen3-vl:8b"),
+        (urllib.error.HTTPError("u", 404, "not found", {}, None), 503, f"ollama pull {vision.MODEL}"),
         (urllib.error.HTTPError("u", 500, "boom", {}, None), 502, "error (500)"),
         (TimeoutError(), 504, "took too long"),
     ],
@@ -158,7 +158,7 @@ def test_scan_receipt_endpoint(client, fake_model):
     scan = client.post("/api/receipts/scan", files=files).json()
     assert scan | {"receipt_path": None} == {
         "document_type": "receipt", "count": 1, "merchant": "BLUE BOTTLE COFFEE", "date": "2026-09-21",
-        "amount": 11.15, "kind": "expense", "receipt_path": None,
+        "amount": 11.15, "kind": "expense", "receipt_path": None, "lat": None, "lng": None,
     }
     assert scan["receipt_path"].endswith(".png")
     assert client.get(f"/api/receipts/{scan['receipt_path']}").content == fixtures.receipt()

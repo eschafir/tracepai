@@ -21,6 +21,9 @@ export type TransactionInput = {
   notes: string;
   tags: string;
   receipt_path: string | null;
+  place: string | null;
+  lat: number | null;
+  lng: number | null;
   splits: Split[];
   repeat?: Frequency | null;
 };
@@ -60,6 +63,8 @@ export type ReceiptScan = {
   amount: number | null;
   kind: "income" | "expense";
   receipt_path: string;
+  lat: number | null;
+  lng: number | null;
 };
 
 export type DocumentRow = {
@@ -95,3 +100,47 @@ export async function api<T>(path: string, init: RequestInit & { json?: unknown 
   }
   return res.json();
 }
+
+export type Place = { name: string; address: string; lat: number; lng: number };
+
+export type PlacePoint = {
+  id: number;
+  date: string;
+  merchant: string;
+  place: string | null;
+  lat: number;
+  lng: number;
+  amount: number;
+  kind: Kind;
+  category: string;
+  color_slot: number | null;
+};
+
+export type GoalInput = { name: string; target_amount: number; target_date: string | null; color_slot: number };
+
+export type Goal = GoalInput & {
+  id: number;
+  saved: number;
+  percent: number;
+  remaining: number;
+  months_left: number | null;
+  monthly_needed: number | null;
+};
+
+export type Contribution = { id: number; goal_id: number; date: string; amount: number; note: string };
+
+export type MonthSummary = {
+  month: string;
+  in_progress: boolean;
+  income: number;
+  expenses: number;
+  net: number;
+  savings_rate: number | null;
+  compared_days: number;
+  change: number;
+  change_percent: number | null;
+  top_category: { name: string; total: number; share: number | null } | null;
+  biggest: { merchant: string; amount: number; date: string } | null;
+  most_visited: { merchant: string; count: number } | null;
+  over_budget: string[];
+};

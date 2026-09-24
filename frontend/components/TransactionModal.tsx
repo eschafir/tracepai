@@ -4,6 +4,7 @@ import { useEffect, useRef, useState } from "react";
 import { api, ApiError, Category, Frequency, Kind, ReceiptScan, Transaction, TransactionInput, Wallet } from "@/lib/api";
 import { iso, money } from "@/lib/format";
 import { useElapsed } from "@/lib/useElapsed";
+import LocationField, { Location } from "@/components/LocationField";
 
 const KINDS: { value: Kind; label: string }[] = [
   { value: "expense", label: "Expense" },
@@ -33,6 +34,10 @@ export default function TransactionModal({
   const [toWalletId, setToWalletId] = useState(initial?.to_wallet_id ? String(initial.to_wallet_id) : "");
   const [repeat, setRepeat] = useState<Frequency | "">("");
   const [hint, setHint] = useState("");
+  const [location, setLocation] = useState<Location | null>(
+    initial?.lat != null && initial?.lng != null ? { place: initial.place ?? "", lat: initial.lat, lng: initial.lng } : null,
+  );
+  const [locationSource, setLocationSource] = useState("");
   const [date, setDate] = useState(initial?.date ?? iso(new Date()));
   const [merchant, setMerchant] = useState(initial?.merchant ?? "");
   const [notes, setNotes] = useState(initial?.notes ?? "");
@@ -41,7 +46,9 @@ export default function TransactionModal({
   const [splits, setSplits] = useState<SplitRow[]>(
     initial?.splits.map((s) => ({ category_id: String(s.category_id), amount: String(s.amount) })) ?? [],
   );
-  const [showDetails, setShowDetails] = useState(Boolean(initial && (initial.notes || initial.tags || initial.splits.length)));
+  const [showDetails, setShowDetails] = useState(
+    Boolean(initial && (initial.notes || initial.tags || initial.splits.length || initial.lat != null)),
+  );
   const [status, setStatus] = useState("");
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
@@ -89,6 +96,13 @@ export default function TransactionModal({
         setCategoryId("");
         suggestCategory(scan.merchant, scan.kind, "");
       }
+      if (scan.lat != null && scan.lng != null) {
+        const { lat, lng } = scan;
+        const place = await api<{ name: string }>(`/places/reverse?lat=${lat}&lng=${lng}`).catch(() => ({ name: "" }));
+        setLocation({ place: place.name || "Photo location", lat, lng });
+        setLocationSource("Location from the photo");
+        setShowDetails(true);
+      }
       const found = scan.amount
         ? "Read. Check the details before saving."
         : "Attached, but no total was found. Enter the amount yourself.";
@@ -124,6 +138,9 @@ export default function TransactionModal({
         .filter(Boolean)
         .join(","),
       receipt_path: receiptPath,
+      place: isTransfer ? null : (location?.place ?? null),
+      lat: isTransfer ? null : (location?.lat ?? null),
+      lng: isTransfer ? null : (location?.lng ?? null),
       splits: isTransfer ? [] : splits.map((s) => ({ category_id: Number(s.category_id), amount: Number(s.amount) })),
       repeat: repeat || null,
     };
@@ -314,11 +331,21 @@ export default function TransactionModal({
           aria-expanded={showDetails}
           onClick={() => setShowDetails(!showDetails)}
         >
-          {showDetails ? "Hide notes, tags and more" : "Add notes, tags, splits or repeat"}
+          {showDetails ? "Hide notes, tags and more" : "Add place, notes, tags, splits or repeat"}
         </button>
 
         {showDetails && (
           <div className="mt-3 space-y-3">
+            {!isTransfer && (
+              <LocationField
+                value={location}
+                source={locationSource}
+                onChange={(l) => {
+                  setLocation(l);
+                  setLocationSource("");
+                }}
+              />
+            )}
             <label className="block text-sm font-medium">
               Notes
               <textarea className="field mt-1.5" rows={2} value={notes} onChange={(e) => setNotes(e.target.value)} />
