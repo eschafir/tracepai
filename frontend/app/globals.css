@@ -1,0 +1,131 @@
+@import "tailwindcss";
+
+:root {
+  color-scheme: light;
+  --page: #eef1f3;
+  --panel: #fcfcfb;
+  --panel-sunk: #f3f5f6;
+  --ink: #15202b;
+  --ink-2: #52514e;
+  --muted: #898781;
+  --grid: #e1e0d9;
+  --axis: #c3c2b7;
+  --line: rgba(21, 32, 43, 0.12);
+  --accent: #0e5b47;
+  --accent-ink: #ffffff;
+  --accent-soft: #dcebe5;
+  --series-1: #2a78d6;
+  --series-2: #eb6834;
+  --series-3: #1baf7a;
+  --series-4: #eda100;
+  --series-5: #e87ba4;
+  --series-6: #008300;
+  --series-7: #4a3aa7;
+  --series-8: #e34948;
+  --good: #0ca30c;
+  --warning: #fab219;
+  --critical: #d03b3b;
+  --up: #006300;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:where(:not([data-theme="light"])) {
+    color-scheme: dark;
+    --page: #0f1113;
+    --panel: #1a1a19;
+    --panel-sunk: #222221;
+    --ink: #f3f5f7;
+    --ink-2: #c3c2b7;
+    --grid: #2c2c2a;
+    --axis: #383835;
+    --line: rgba(255, 255, 255, 0.1);
+    --accent: #4fb896;
+    --accent-ink: #06231b;
+    --accent-soft: #173a30;
+    --series-1: #3987e5;
+    --series-2: #d95926;
+    --series-3: #199e70;
+    --series-4: #c98500;
+    --series-5: #d55181;
+    --series-6: #008300;
+    --series-7: #9085e9;
+    --series-8: #e66767;
+    --up: #0ca30c;
+  }
+}
+
+@theme inline {
+  --color-page: var(--page);
+  --color-panel: var(--panel);
+  --color-panel-sunk: var(--panel-sunk);
+  --color-ink: var(--ink);
+  --color-ink-2: var(--ink-2);
+  --color-muted: var(--muted);
+  --color-line: var(--line);
+  --color-accent: var(--accent);
+  --color-accent-ink: var(--accent-ink);
+  --color-accent-soft: var(--accent-soft);
+  --color-critical: var(--critical);
+  --color-up: var(--up);
+  --font-sans: var(--font-public);
+  --font-display: var(--font-bricolage);
+}
+
+body {
+  background: var(--page);
+  color: var(--ink);
+}
+
+.tnum {
+  font-variant-numeric: tabular-nums;
+}
+
+@layer components {
+  .field {
+    width: 100%;
+    border-radius: 10px;
+    border: 1px solid var(--line);
+    background: var(--panel);
+    padding: 0.55rem 0.75rem;
+    font-size: 0.95rem;
+  }
+
+  .field:focus-visible,
+  .btn:focus-visible,
+  a:focus-visible,
+  button:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 2px;
+  }
+
+  .btn {
+    border-radius: 999px;
+    padding: 0.5rem 1.1rem;
+    font-weight: 600;
+    font-size: 0.9rem;
+    border: 1px solid var(--line);
+    background: var(--panel);
+    cursor: pointer;
+  }
+
+  .btn-primary {
+    background: var(--accent);
+    color: var(--accent-ink);
+    border-color: transparent;
+  }
+
+  .btn:disabled {
+    opacity: 0.5;
+    cursor: default;
+  }
+
+  input[type="number"]::-webkit-inner-spin-button,
+  input[type="number"]::-webkit-outer-spin-button {
+    appearance: none;
+    margin: 0;
+  }
+
+  input[type="number"] {
+    appearance: textfield;
+  }
+}

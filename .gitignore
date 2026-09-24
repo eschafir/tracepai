@@ -1,0 +1,47 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+htmlcov/
+build/
+dist/
+
+# Node / Next.js
+node_modules/
+.next/
+out/
+*.tsbuildinfo
+next-env.d.ts
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.pnpm-debug.log*
+
+# App data (SQLite database, uploaded receipts) and the copied frontend build
+backend/data/
+backend/static/
+*.db
+*.sqlite3
+
+# Environment and secrets
+.env
+.env.*
+*.pem
+
+# Local tool settings
+.claude/settings.local.json
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# CLAUDE
+.claude/
+CLAUDE.md

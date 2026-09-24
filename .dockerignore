@@ -1,0 +1,8 @@
+**/node_modules
+**/.next
+**/out
+**/.venv
+**/.git
+**/__pycache__
+backend/static
+backend/data
