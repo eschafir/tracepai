@@ -13,7 +13,7 @@ from app.models import Budget, BudgetGroup, Category, CategoryKind, Goal, Kind, 
 from app.recurring import advance
 from app.routers.goals import signed
 from app.routers.transactions import query_transactions
-from app.shared import my_ledgers, shares
+from app.shared import my_ledgers, shared_with, shares
 from app.wallets import wallet_deltas
 
 router = APIRouter(prefix="/analytics", tags=["analytics"])
@@ -38,35 +38,33 @@ SHARED_CATEGORY = -1  # your share of a shared expense in a category you don't h
 
 
 def spending(db: DbSession, user: CurrentUser, start: dt.date | None = None, end: dt.date | None = None, wallet: int | None = None):
-    """Transactions as they count for spending and income: without settle-up payments, and with shared expenses cut to
-    your share, including your share of what other members paid (all wallets only). A shared expense uses its shared
-    wallet owner's categories, so for other members it maps to their category with the same name, or "Shared".
+    """Transactions as they count for spending and income: without payments that settle up or pay back a share, and
+    with shared expenses cut to your share, including your share of what others paid (all wallets only). A shared
+    expense uses the categories of its shared wallet's owner, or of its payer when it isn't in a shared wallet; for
+    everyone else it maps to their category with the same name, or "Shared".
     Balances and net worth use query_transactions, since there the whole payment left the payer's wallet."""
-    own = [t for t in query_transactions(db, user, start, end, wallet=wallet) if t.settlement_id is None]
-    ledger_ids = [ledger.id for ledger in my_ledgers(db, user.id)]
+    own = [t for t in query_transactions(db, user, start, end, wallet=wallet) if t.settlement_id is None and t.share_payment_id is None]
     others = []
-    if ledger_ids and not wallet:
+    if not wallet:
+        ledger_ids = [ledger.id for ledger in my_ledgers(db, user.id)]
         stmt = select(Transaction).where(col(Transaction.shared_wallet_id).in_(ledger_ids), Transaction.user_id != user.id)
-        if start:
-            stmt = stmt.where(Transaction.date >= start)
-        if end:
-            stmt = stmt.where(Transaction.date <= end)
-        others = db.exec(stmt).all()
+        direct = [t for t in shared_with(db, user.id) if t.user_id != user.id]
+        others = [t for t in [*db.exec(stmt), *direct] if (not start or t.date >= start) and (not end or t.date <= end)]
 
     mine = {c.name.lower(): c.id for c in db.exec(select(Category).where(Category.user_id == user.id))}
-    mapping: dict[int, dict[int, int] | None] = {}  # shared wallet -> owner's category id -> yours; None if you own it
+    mapping: dict[int, dict[int, int] | None] = {}  # categories' owner -> their category id -> yours; None if they're yours
 
     def category(txn: Transaction, category_id: int | None) -> int | None:
-        if txn.shared_wallet_id not in mapping:
-            owner = db.get(SharedWallet, txn.shared_wallet_id).owner_id
+        owner = db.get(SharedWallet, txn.shared_wallet_id).owner_id if txn.shared_wallet_id else txn.user_id
+        if owner not in mapping:
             owned = db.exec(select(Category).where(Category.user_id == owner)).all()
-            mapping[txn.shared_wallet_id] = None if owner == user.id else {c.id: mine.get(c.name.lower(), SHARED_CATEGORY) for c in owned}
-        table = mapping[txn.shared_wallet_id]
+            mapping[owner] = None if owner == user.id else {c.id: mine.get(c.name.lower(), SHARED_CATEGORY) for c in owned}
+        table = mapping[owner]
         return category_id if table is None or category_id is None else table.get(category_id, SHARED_CATEGORY)
 
     out = []
     for txn in own + others:
-        if txn.shared_wallet_id is None:
+        if not txn.shared_members:
             out.append(txn)
             continue
         share = shares(txn).get(user.id)

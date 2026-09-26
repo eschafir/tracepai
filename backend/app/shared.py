@@ -1,4 +1,5 @@
-"""Shared wallets: expenses paid from members' own wallets and split equally between the members at the time."""
+"""Shared expenses: paid from the payer's own wallet and split by percent, either in a shared wallet (settled up as a
+ledger) or on their own (each person pays back their share)."""
 
 from collections import defaultdict
 
@@ -6,7 +7,7 @@ from fastapi import HTTPException
 from sqlmodel import Session, col, or_, select
 
 from app import fx
-from app.models import Settlement, SharedMember, SharedWallet, Transaction, User, Wallet
+from app.models import Settlement, SharePayment, SharedMember, SharedWallet, Transaction, User, Wallet
 
 
 def member_ids(db: Session, ledger: SharedWallet) -> list[int]:
@@ -102,3 +103,25 @@ def debts(net: dict[int, float]) -> list[dict]:
 
 def usernames(db: Session, ids: list[int]) -> dict[int, str]:
     return {u.id: u.username for u in db.exec(select(User).where(col(User.id).in_(ids)))}
+
+
+def shared_with(db: Session, user_id: int) -> list[Transaction]:
+    """Shared expenses outside shared wallets that the user paid or has a share of, newest first."""
+    stmt = select(Transaction).where(
+        col(Transaction.shared_wallet_id).is_(None),
+        col(Transaction.shared_members).is_not(None),
+        or_(Transaction.user_id == user_id, col(Transaction.shared_members).contains(f"{user_id}:")),
+    )
+    txns = db.exec(stmt.order_by(col(Transaction.date).desc(), col(Transaction.id).desc())).all()
+    return [t for t in txns if t.user_id == user_id or user_id in shares(t)]
+
+
+def share_payments(db: Session, txn: Transaction) -> list[SharePayment]:
+    return db.exec(select(SharePayment).where(SharePayment.transaction_id == txn.id)).all()
+
+
+def delete_payment(db: Session, payment: SharePayment):
+    """A payment and the transactions that recorded it in either person's wallet."""
+    for recorded in db.exec(select(Transaction).where(Transaction.share_payment_id == payment.id)):
+        db.delete(recorded)
+    db.delete(payment)

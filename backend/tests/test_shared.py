@@ -187,3 +187,69 @@ def test_percentages_editing_and_deleting(client):
     assert all(t["id"] not in (hotel["id"], lunch["id"]) for t in client.get("/api/transactions").json() + eva.get("/api/transactions").json())
     assert not [t for t in client.get("/api/transactions").json() + eva.get("/api/transactions").json() if t["settlement_id"] == paid["id"]]
     assert client.get("/api/wallets").json() == before["mine"] and eva.get("/api/wallets").json() == before["hers"]
+
+
+def test_shared_expense_without_a_shared_wallet(client):
+    day, month = "2013-07-12", {"month": "2013-07"}  # a month no other test uses
+    dan, eli = signup("dora"), signup("elio")
+    mine, his = ids(client, "/api/wallets"), ids(dan, "/api/wallets")
+    me = client.get("/api/auth/me").json()["id"]
+    assert client.get("/api/auth/users/nobody").status_code == 404
+    dan_id = client.get("/api/auth/users/dora").json()["id"]
+    before = {"mine": client.get("/api/wallets").json(), "his": dan.get("/api/wallets").json()}
+    dining = ids(client, "/api/categories")["Dining"]
+    expense = {"date": day, "kind": "expense", "amount": 90, "merchant": "Dinner", "wallet_id": mine["Checking"],
+               "category_id": dining, "tags": "friends"}
+
+    assert client.post("/api/transactions", json={**expense, "shares": {me: 100}}).status_code == 422  # no one else
+    assert client.post("/api/transactions", json={**expense, "shares": {me: 50, 99999: 50}}).status_code == 422
+    assert client.post("/api/transactions", json={**expense, "shares": {me: 40, dan_id: 50}}).status_code == 422
+    assert client.post("/api/transactions", json={**expense, "kind": "income", "category_id": None,
+                                                  "shares": {me: 40, dan_id: 60}}).status_code == 422
+    dinner = client.post("/api/transactions", json={**expense, "shares": {me: 40, dan_id: 60}}).json()
+    assert dinner["shared_members"] == f"{me}:40,{dan_id}:60" and dinner["tags"] == "friends,shared"
+
+    # Each person's spending is their share, in their own category with the same name.
+    assert client.get("/api/analytics/summary", params=month).json()["expenses"] == 36
+    assert dan.get("/api/analytics/summary", params=month).json()["expenses"] == 54
+    params = {"start": "2013-07-01", "end": "2013-07-31"}
+    assert {c["name"]: c["total"] for c in dan.get("/api/analytics/categories", params=params).json()} == {"Dining": 54}
+    assert [t["id"] for t in dan.get("/api/transactions").json()] == []  # the money left my wallet, not his
+
+    seen = dan.get("/api/shared-expenses").json()
+    assert [s["id"] for s in seen] == [dinner["id"]] and seen[0]["paid_by"]["username"] == "user"
+    assert [(s["username"], s["percent"], s["amount"], s["payment"]) for s in seen[0]["shares"]] == [
+        ("user", 40, 36, None), ("dora", 60, 54, None)]
+    assert eli.get("/api/shared-expenses").json() == [] and eli.get(f"/api/shared-expenses/{dinner['id']}").status_code == 404
+    pay = f"/api/shared-expenses/{dinner['id']}/payments"
+    assert eli.post(pay, json={"user_id": dan_id, "date": day}).status_code == 404
+    assert client.post(pay, json={"user_id": me, "date": day}).status_code == 422  # the payer has nothing to pay back
+
+    # Dan pays back from his wallet; I record it in mine. Neither is spending.
+    paid = dan.post(pay, json={"user_id": dan_id, "date": day, "wallet_id": his["Cash"]}).json()
+    payment = paid["shares"][1]["payment"]
+    assert payment["recorded_by"] == [dan_id]
+    assert dan.post(pay, json={"user_id": dan_id, "date": day}).status_code == 409
+    assert client.post(f"/api/shared-expenses/payments/{payment['id']}/record", json={"wallet_id": his["Cash"]}).status_code == 404
+    client.post(f"/api/shared-expenses/payments/{payment['id']}/record", json={"wallet_id": mine["Checking"]})
+    assert eli.delete(f"/api/shared-expenses/payments/{payment['id']}").status_code == 404
+    balance = lambda c, name: next(w["balance"] for w in c.get("/api/wallets").json() if w["name"] == name)  # noqa: E731
+    assert balance(dan, "Cash") == next(w["balance"] for w in before["his"] if w["name"] == "Cash") - 54
+    assert balance(client, "Checking") == next(w["balance"] for w in before["mine"] if w["name"] == "Checking") - 90 + 54
+    assert client.get("/api/analytics/summary", params=month).json()["expenses"] == 36
+    assert dan.get("/api/analytics/summary", params=month).json()["expenses"] == 54
+
+    # Undoing the payment removes what it recorded, on both sides.
+    unpaid = client.delete(f"/api/shared-expenses/payments/{payment['id']}").json()
+    assert unpaid["shares"][1]["payment"] is None and dan.get("/api/wallets").json() == before["his"]
+
+    # Taking dan off the expense, or deleting it, drops his payment too.
+    dan.post(pay, json={"user_id": dan_id, "date": day, "wallet_id": his["Cash"]})
+    solo = client.put(f"/api/transactions/{dinner['id']}", json={**expense, "shares": None}).json()
+    assert solo["shared_members"] is None and dan.get("/api/shared-expenses").json() == []
+    assert dan.get("/api/wallets").json() == before["his"]
+    client.put(f"/api/transactions/{dinner['id']}", json={**expense, "shares": {me: 50, dan_id: 50}})
+    dan.post(pay, json={"user_id": dan_id, "date": day, "wallet_id": his["Cash"]})
+    client.delete(f"/api/transactions/{dinner['id']}")
+    assert dan.get("/api/wallets").json() == before["his"] and client.get("/api/wallets").json() == before["mine"]
+    assert dan.get("/api/analytics/summary", params=month).json()["expenses"] == 0

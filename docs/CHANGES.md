@@ -1,5 +1,47 @@
 # Changes
 
+## 2026-09-26 08:56 EDT - Feature
+
+A single expense can be shared with other people directly, without a shared wallet, and each person's share is tracked until they pay it back.
+
+- **Adding one:**
+  - Add transaction has a **Shared** switch for expenses. Turned on, it shows "People and their share": you plus anyone added by username (Enter or Add), with a percent each, starting at an equal split, and "Split equally".
+  - Saving is blocked until at least one person is added and the percentages add up to 100%. An unknown username says "No one is signed up as X."
+  - The switch adds the "shared" tag, and turning it off removes it. The backend also adds the tag to every direct shared expense.
+  - If you're in shared wallets, a "Shared in" choice appears under the switch: "Just this expense, with people I choose" (the default) or one of your shared wallets, which works as before.
+- **What each person sees:**
+  - **The payer:** the Transactions row shows "Your share $36.00" and, per person, "dora owes you $54.00" or "dora paid you back $54.00, Sep 26".
+  - **Everyone else:** a "Shared with you" section at the top of Transactions: "user paid $90.00. Your share is 60%. You owe user $54.00". Only the payer can edit or delete the expense.
+- **Spending:** the whole amount leaves the payer's wallet, but each person's spending counts only their share, in their own category with the same name (or "Shared"), as with shared wallets.
+- **Paying back:**
+  - Either the payer or that person can "Mark paid", with a date and, optionally, one of their wallets in the expense's currency to record the money moving.
+  - The other one can later "Record in my wallet". "Undo" removes the payment and anything it recorded, on both sides.
+  - Recorded payments move wallet balances but are not spending or income.
+- **Cleanup:** removing someone from the expense, turning Shared off, or deleting the expense removes their payments and what they recorded.
+- **Code:**
+  - **Backend:**
+    - New `SharePayment` table and `Transaction.share_payment_id`, both added to existing databases on start-up.
+    - `apply()` in `routers/transactions.py` accepts `shares` without a shared wallet and validates them.
+    - New `routers/shared_expenses.py`: list, get, mark paid, record, undo.
+    - `GET /api/auth/users/{username}` looks someone up.
+    - `shared_with`, `share_payments` and `delete_payment` in `app/shared.py`.
+    - `spending()` in `routers/analytics.py` includes shares of direct expenses paid by others, maps categories by the payer's names, and leaves out payback payments.
+  - **Frontend:**
+    - `components/TransactionModal.tsx` has the switch and people.
+    - New `components/ShareStatus.tsx`.
+    - `components/Switch.tsx` is extracted from the wallet form and used in both forms.
+    - `app/transactions/page.tsx` shows the statuses and the "Shared with you" section.
+- **Tests:**
+  - New `test_shared_expense_without_a_shared_wallet`. All 87 backend tests pass.
+  - A browser run with two accounts on a separate test container covered:
+    - the switch, adding people, the unknown user, the 90% block, and the tag
+    - each side's spending and view
+    - marking paid from a wallet, recording on the other side, and undo
+    - editing, then turning Shared off
+    - phone width in dark mode
+  - The earlier shared-wallet, wallet and layout suites still pass. The batch 3 suite now turns the switch on before choosing a shared wallet.
+  - A copy of the live database upgrades with unchanged wallets and transactions.
+
 ## 2026-09-25 21:25 EDT - Feature
 
 Panels on Overview and Year can be dragged into any order, and the order is saved to the account.

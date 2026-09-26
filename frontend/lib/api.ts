@@ -36,7 +36,7 @@ export type TransactionInput = {
   shares?: Record<number, number> | null; // shared expenses: percent per user id
 };
 
-export type Transaction = TransactionInput & { id: number; recurring_id: number | null; shared_members: string | null; settlement_id: number | null };
+export type Transaction = TransactionInput & { id: number; recurring_id: number | null; shared_members: string | null; settlement_id: number | null; share_payment_id: number | null };
 
 export type RecurringInput = {
   kind: Kind;
@@ -227,6 +227,25 @@ export type SharedDetail = SharedWallet & {
   settlements: Settlement[];
   balances: Record<string, number>;
   debts: { from_user_id: number; to_user_id: number; amount: number }[];
+};
+
+export type Person = { id: number; username: string };
+
+// A shared expense outside shared wallets, as both the payer and the people sharing it see it.
+export type SharedExpense = {
+  id: number;
+  date: string;
+  merchant: string;
+  amount: number;
+  currency: string;
+  paid_by: Person;
+  shares: {
+    user_id: number;
+    username: string;
+    percent: number;
+    amount: number;
+    payment: { id: number; date: string; recorded_by: number[] } | null;
+  }[];
 };
 
 // Percent per user id from a transaction's shared_members: "1:60,4:40", or the older "1,4" for an equal split.

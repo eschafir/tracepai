@@ -154,6 +154,15 @@ class Settlement(SQLModel, table=True):
     date: dt.date
 
 
+class SharePayment(SQLModel, table=True):
+    """Someone paying back their whole share of a shared expense that isn't in a shared wallet."""
+
+    id: int | None = Field(default=None, primary_key=True)
+    transaction_id: int = Field(foreign_key="transaction.id", index=True)
+    user_id: int = Field(foreign_key="user.id")  # who paid their share back
+    date: dt.date
+
+
 class TransactionBase(Entry):
     date: dt.date
     receipt_path: str | None = None
@@ -169,6 +178,7 @@ class Transaction(TransactionBase, table=True):
     user_id: int = Field(foreign_key="user.id", index=True)
     shared_members: str | None = None  # who shares this expense and their percent, fixed when shared: "1:60,4:40"
     settlement_id: int | None = Field(default=None, foreign_key="settlement.id")  # money moved to settle up, not spending
+    share_payment_id: int | None = None  # money moved to pay back a share (a SharePayment id), not spending
     splits: list[Split] = Relationship(
         back_populates="txn", sa_relationship_kwargs={"cascade": "all, delete-orphan", "lazy": "selectin"}
     )
@@ -176,7 +186,7 @@ class Transaction(TransactionBase, table=True):
 
 class TransactionIn(TransactionBase):
     splits: list[SplitBase] = []
-    shares: dict[int, float] | None = None  # shared expenses: percent per user id, adding up to 100
+    shares: dict[int, float] | None = None  # shared expenses: percent per user id (you included), adding up to 100
     repeat: Frequency | None = None
 
     @model_validator(mode="after")
@@ -190,6 +200,7 @@ class TransactionOut(TransactionBase):
     splits: list[SplitBase] = []
     shared_members: str | None = None
     settlement_id: int | None = None
+    share_payment_id: int | None = None
 
 
 class BudgetBase(SQLModel):

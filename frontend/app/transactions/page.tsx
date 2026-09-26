@@ -8,8 +8,9 @@ import { PinIcon } from "@/components/LocationField";
 import Toast from "@/components/Toast";
 import ImportDialog from "@/components/ImportDialog";
 import ReceiptViewer, { ReceiptButton } from "@/components/ReceiptViewer";
+import ShareStatus from "@/components/ShareStatus";
 import TransactionModal from "@/components/TransactionModal";
-import { api, Category, Goal, SharedWallet, Transaction, Wallet, parseShares } from "@/lib/api";
+import { api, Category, Goal, SharedExpense, SharedWallet, Transaction, Wallet, parseShares } from "@/lib/api";
 import { money, shortDate, slotColor } from "@/lib/format";
 
 // Leaflet needs the browser's window, so the map only loads on the client.
@@ -52,16 +53,18 @@ function Transactions({ wallet }: { wallet: string }) {
   const [goals, setGoals] = useState<Goal[]>([]);
   const [shared, setShared] = useState<SharedWallet[]>([]);
   const [myId, setMyId] = useState<number | null>(null);
+  const [sharedExpenses, setSharedExpenses] = useState<SharedExpense[]>([]); // shared directly, without a shared wallet
 
   const load = useCallback(async () => {
     const params = new URLSearchParams(Object.entries(filters).filter(([, v]) => v));
-    const [txns, cats, ws, gs, sh, me] = await Promise.all([
+    const [txns, cats, ws, gs, sh, me, se] = await Promise.all([
       api<Transaction[]>(`/transactions?${params}`),
       api<Category[]>("/categories"),
       api<Wallet[]>("/wallets"),
       api<Goal[]>("/goals"),
       api<SharedWallet[]>("/shared"),
       api<{ id: number }>("/auth/me"),
+      api<SharedExpense[]>("/shared-expenses"),
     ]);
     setTransactions(txns);
     setCategories(cats);
@@ -69,6 +72,7 @@ function Transactions({ wallet }: { wallet: string }) {
     setGoals(gs);
     setShared(sh);
     setMyId(me.id);
+    setSharedExpenses(se);
   }, [filters]);
 
   useEffect(() => {
@@ -99,11 +103,14 @@ function Transactions({ wallet }: { wallet: string }) {
     if (!deleted) return;
     const { id: _id, recurring_id: _recurring, ...body } = deleted;
     setDeleted(null);
-    await api("/transactions", { method: "POST", json: { ...body, shares: deleted.shared_wallet_id ? parseShares(deleted.shared_members) : null } });
+    await api("/transactions", { method: "POST", json: { ...body, shares: deleted.shared_members ? parseShares(deleted.shared_members) : null } });
     load();
   }
 
   const clearToast = useCallback(() => setDeleted(null), []);
+
+  const splitOf = (t: Transaction) => sharedExpenses.find((e) => e.id === t.id);
+  const sharedWithMe = sharedExpenses.filter((e) => e.paid_by.id !== myId);
 
   const categoryNames = (t: Transaction) => {
     if (t.kind === "transfer") return `Transfer to ${walletName(t.to_wallet_id)}`;
@@ -227,6 +234,32 @@ function Transactions({ wallet }: { wallet: string }) {
         ))}
       </div>
 
+      {sharedWithMe.length > 0 && myId !== null && (
+        <section className="mb-4 rounded-2xl bg-panel p-4 sm:p-5">
+          <h2 className="mb-3 font-display text-lg font-semibold">Shared with you</h2>
+          <ul className="divide-y divide-line text-sm">
+            {sharedWithMe.map((e) => {
+              const mine = e.shares.find((x) => x.user_id === myId)!;
+              return (
+                <li key={e.id} className="flex flex-wrap items-baseline gap-x-4 gap-y-1 py-3 first:pt-0 last:pb-0">
+                  <span className="w-14 shrink-0 text-ink-2 tnum">{shortDate(e.date)}</span>
+                  <div className="mr-auto min-w-0">
+                    <span className="block">{e.merchant || "No merchant"}</span>
+                    <span className="block text-xs text-ink-2">
+                      {e.paid_by.username} paid {money(e.amount, e.currency)}. Your share is {mine.percent}%.
+                    </span>
+                    <div className="mt-1">
+                      <ShareStatus expense={e} share={mine} myId={myId} wallets={wallets} onChange={load} />
+                    </div>
+                  </div>
+                  <span className="font-medium tnum">{money(mine.amount, e.currency)}</span>
+                </li>
+              );
+            })}
+          </ul>
+        </section>
+      )}
+
       {transactions && (
         <div className="overflow-x-auto rounded-2xl bg-panel">
           {transactions.length === 0 ? (
@@ -274,6 +307,18 @@ function Transactions({ wallet }: { wallet: string }) {
                           Shared in {shared.find((s) => s.id === t.shared_wallet_id)?.name}, your share{" "}
                           {money((t.amount * (parseShares(t.shared_members)[myId] ?? 0)) / 100, currencyOf(t.wallet_id))}
                         </span>
+                      )}
+                      {splitOf(t) && myId !== null && (
+                        <div className="mt-1 space-y-1">
+                          <span className="block text-xs text-ink-2">
+                            Your share {money(splitOf(t)!.shares.find((x) => x.user_id === myId)?.amount ?? 0, currencyOf(t.wallet_id))}
+                          </span>
+                          {splitOf(t)!
+                            .shares.filter((x) => x.user_id !== myId)
+                            .map((x) => (
+                              <ShareStatus key={x.user_id} expense={splitOf(t)!} share={x} myId={myId} wallets={wallets} onChange={load} />
+                            ))}
+                        </div>
                       )}
                       {t.goal_id && (
                         <span className="block max-w-32 truncate text-xs sm:max-w-56 text-ink-2">

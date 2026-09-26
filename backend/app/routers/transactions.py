@@ -4,10 +4,10 @@ from fastapi import APIRouter, HTTPException
 from sqlmodel import col, or_, select
 
 from app.auth import CurrentUser, DbSession
-from app.models import Kind, RecurringRule, Split, Transaction, TransactionIn, TransactionOut
+from app.models import Kind, RecurringRule, Split, Transaction, TransactionIn, TransactionOut, User
 from app.recurring import advance, post_due
 from app.routers.goals import check_linked
-from app.shared import encode_shares, equal_shares, get_member_ledger, member_ids
+from app.shared import delete_payment, encode_shares, equal_shares, get_member_ledger, member_ids, share_payments, shares
 from app.wallets import check_received
 
 router = APIRouter(prefix="/transactions", tags=["transactions"])
@@ -48,29 +48,49 @@ def query_transactions(
     return db.exec(stmt.order_by(col(Transaction.date).desc(), col(Transaction.id).desc())).all()
 
 
+def check_percents(percents: dict[int, float]):
+    if any(p < 0 for p in percents.values()) or abs(sum(percents.values()) - 100) > 0.01:
+        raise HTTPException(422, "The percentages must add up to 100%.")
+
+
 def apply(db: DbSession, user: CurrentUser, txn: Transaction, data: TransactionIn):
     check_received(db, data)
     if data.goal_id is not None:
         check_linked(db, user, data)
+    if (data.shared_wallet_id is not None or data.shares) and data.kind != Kind.expense:
+        raise HTTPException(422, "Only expenses can be shared.")
     if data.shared_wallet_id is not None:
         ledger = get_member_ledger(db, user.id, data.shared_wallet_id)
-        if data.kind != Kind.expense:
-            raise HTTPException(422, "Only expenses can be shared.")
         members = member_ids(db, ledger)
         if data.shares is not None:
             if not set(data.shares) <= set(members):
                 raise HTTPException(422, f"Only people in {ledger.name} can share this expense.")
-            if any(p < 0 for p in data.shares.values()) or abs(sum(data.shares.values()) - 100) > 0.01:
-                raise HTTPException(422, "The percentages must add up to 100%.")
+            check_percents(data.shares)
             txn.shared_members = encode_shares(data.shares)
         elif txn.shared_wallet_id != ledger.id or not txn.shared_members:  # keep a saved split unless it moved
             txn.shared_members = encode_shares(equal_shares(members))
+    elif data.shares:  # shared with people directly, without a shared wallet
+        if not set(data.shares) - {user.id}:
+            raise HTTPException(422, "Choose at least one person to share this expense with.")
+        for uid in data.shares:
+            if not db.get(User, uid):
+                raise HTTPException(422, "Everyone sharing this expense needs a TracepAI account.")
+        check_percents(data.shares)
+        txn.shared_members = encode_shares(data.shares)
     else:
         txn.shared_members = None
     txn.sqlmodel_update(data.model_dump(exclude={"splits", "repeat", "recurring_id", "shares"}))
     txn.splits = [Split(**s.model_dump()) for s in data.splits]
     if txn.splits:
         txn.category_id = None
+    direct = txn.shared_members and txn.shared_wallet_id is None
+    if direct and "shared" not in txn.tags.lower().split(","):
+        txn.tags = ",".join(t for t in [*txn.tags.split(","), "shared"] if t)
+    if txn.id:  # someone taken off the expense no longer has a payment
+        still = set(shares(txn)) if direct else set()
+        for payment in share_payments(db, txn):
+            if payment.user_id not in still:
+                delete_payment(db, payment)
 
 
 @router.get("")
@@ -123,6 +143,9 @@ def update_transaction(transaction_id: int, data: TransactionIn, db: DbSession, 
 
 @router.delete("/{transaction_id}")
 def delete_transaction(transaction_id: int, db: DbSession, user: CurrentUser):
-    db.delete(get_owned(db, user, transaction_id))
+    txn = get_owned(db, user, transaction_id)
+    for payment in share_payments(db, txn):
+        delete_payment(db, payment)
+    db.delete(txn)
     db.commit()
     return {"ok": True}

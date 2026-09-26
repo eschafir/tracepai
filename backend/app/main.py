@@ -6,7 +6,7 @@ from fastapi.staticfiles import StaticFiles
 
 from app import auth
 from app.db import init_db
-from app.routers import analytics, budgets, categories, export, fx, goals, imports, places, receipts, recurring, settings, shared, transactions, wallets
+from app.routers import analytics, budgets, categories, export, fx, goals, imports, places, receipts, recurring, settings, shared, shared_expenses, transactions, wallets
 
 STATIC_DIR = Path(__file__).parent.parent / "static"
 
@@ -20,7 +20,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(title="TracepAI", lifespan=lifespan)
 
 api = APIRouter(prefix="/api")
-for module in (auth, transactions, wallets, categories, budgets, goals, recurring, analytics, places, receipts, imports, export, fx, settings, shared):
+for module in (auth, transactions, wallets, categories, budgets, goals, recurring, analytics, places, receipts, imports, export, fx, settings, shared, shared_expenses):
     api.include_router(module.router)
 app.include_router(api)
 

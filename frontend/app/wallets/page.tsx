@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { useCallback, useEffect, useId, useState } from "react";
 import Shell from "@/components/Shell";
+import Switch from "@/components/Switch";
 import { api, ApiError, SharedWallet, Wallet, WalletKind } from "@/lib/api";
 import { money, slotColor } from "@/lib/format";
 
@@ -50,21 +51,7 @@ function WalletForm({ initial, initialShared, canToggle, currencies, currencyLoc
       }}
     >
       <div className="flex items-center gap-3 sm:col-span-4">
-        <button
-          type="button"
-          role="switch"
-          aria-checked={shared}
-          aria-labelledby={`${id}-shared`}
-          disabled={!canToggle}
-          onClick={() => setShared(!shared)}
-          className={`relative h-6 w-11 shrink-0 rounded-full transition-colors disabled:cursor-not-allowed disabled:opacity-60 ${
-            shared ? "bg-accent" : "bg-panel-sunk ring-1 ring-line"
-          }`}
-        >
-          <span
-            className={`absolute top-0.5 left-0.5 h-5 w-5 rounded-full bg-white shadow transition-transform ${shared ? "translate-x-5" : ""}`}
-          />
-        </button>
+        <Switch checked={shared} onChange={setShared} labelledBy={`${id}-shared`} disabled={!canToggle} />
         <span id={`${id}-shared`} className="text-sm font-medium">
           Shared
         </span>

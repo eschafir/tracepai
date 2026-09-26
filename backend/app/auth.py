@@ -77,3 +77,12 @@ def logout(response: Response, db: DbSession, session_token: Annotated[str | Non
 @router.get("/me")
 def me(user: CurrentUser):
     return {"id": user.id, "username": user.username}
+
+
+@router.get("/users/{username}")
+def find_user(username: str, db: DbSession, user: CurrentUser):
+    """Looks someone up by username, to share an expense with them."""
+    found = db.exec(select(User).where(User.username == username.strip())).first()
+    if not found:
+        raise HTTPException(404, f"No one is signed up as {username.strip()}.")
+    return {"id": found.id, "username": found.username}
