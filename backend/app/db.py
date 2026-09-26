@@ -13,7 +13,7 @@ engine = create_engine(f"sqlite:///{DATA_DIR / 'tracepai.db'}", connect_args={"c
 
 
 def add_missing_columns():
-    """Add columns that are in the models but not yet in an existing database. New columns are nullable."""
+    """Add columns that are in the models but not yet in an existing database. New columns are nullable or have a text default."""
     with engine.begin() as conn:
         for table in SQLModel.metadata.sorted_tables:
             existing = {row[1] for row in conn.exec_driver_sql(f'PRAGMA table_info("{table.name}")')}
@@ -22,6 +22,9 @@ def add_missing_columns():
             for column in table.columns:
                 if column.name not in existing:
                     kind = column.type.compile(dialect=engine.dialect)
+                    default = column.default.arg if column.default is not None and column.default.is_scalar else None
+                    if isinstance(default, str):  # e.g. wallet.currency = 'USD', so existing rows get a value
+                        kind += f" DEFAULT '{default}'"
                     conn.exec_driver_sql(f'ALTER TABLE "{table.name}" ADD COLUMN "{column.name}" {kind}')
 
 

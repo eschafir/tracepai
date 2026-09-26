@@ -3,11 +3,13 @@ from typing import Annotated
 
 from fastapi import APIRouter, Cookie, Depends, HTTPException, Response
 from pwdlib import PasswordHash
+from pydantic import StringConstraints
 from sqlmodel import Session, SQLModel, select
 
 from app.db import get_session
 from app.models import Session as UserSession
 from app.models import User
+from app.seed import start_account
 
 password_hash = PasswordHash.recommended()
 router = APIRouter(prefix="/auth", tags=["auth"])
@@ -30,15 +32,36 @@ class Credentials(SQLModel):
     password: str
 
 
+class SignUp(SQLModel):
+    username: Annotated[str, StringConstraints(min_length=3, max_length=32, pattern=r"^[A-Za-z0-9_.-]+$")]
+    password: Annotated[str, StringConstraints(min_length=8)]
+
+
+def start_session(db: Session, response: Response, user: User):
+    token = secrets.token_urlsafe(32)
+    db.add(UserSession(token=token, user_id=user.id))
+    db.commit()
+    response.set_cookie("session_token", token, httponly=True, samesite="lax", max_age=60 * 60 * 24 * 30)
+
+
 @router.post("/login")
 def login(creds: Credentials, response: Response, db: DbSession):
     user = db.exec(select(User).where(User.username == creds.username)).first()
     if not user or not password_hash.verify(creds.password, user.password_hash):
         raise HTTPException(401, "Invalid username or password")
-    token = secrets.token_urlsafe(32)
-    db.add(UserSession(token=token, user_id=user.id))
-    db.commit()
-    response.set_cookie("session_token", token, httponly=True, samesite="lax", max_age=60 * 60 * 24 * 30)
+    start_session(db, response, user)
+    return {"username": user.username}
+
+
+@router.post("/signup")
+def signup(data: SignUp, response: Response, db: DbSession):
+    if db.exec(select(User).where(User.username == data.username)).first():
+        raise HTTPException(409, "That username is taken. Try another one.")
+    user = User(username=data.username, password_hash=password_hash.hash(data.password))
+    db.add(user)
+    db.flush()
+    start_account(db, user)
+    start_session(db, response, user)
     return {"username": user.username}
 
 
@@ -53,4 +76,4 @@ def logout(response: Response, db: DbSession, session_token: Annotated[str | Non
 
 @router.get("/me")
 def me(user: CurrentUser):
-    return {"username": user.username}
+    return {"id": user.id, "username": user.username}

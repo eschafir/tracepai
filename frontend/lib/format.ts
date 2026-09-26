@@ -1,8 +1,13 @@
-const currency = new Intl.NumberFormat("en-US", { style: "currency", currency: "USD" });
-const compact = new Intl.NumberFormat("en-US", { style: "currency", currency: "USD", notation: "compact" });
+const formatters = new Map<string, Intl.NumberFormat>();
+const formatter = (currency: string, notation?: "compact") => {
+  const key = `${currency}-${notation}`;
+  if (!formatters.has(key)) formatters.set(key, new Intl.NumberFormat("en-US", { style: "currency", currency, notation }));
+  return formatters.get(key)!;
+};
 
-export const money = (value: number) => currency.format(value);
-export const moneyShort = (value: number) => compact.format(value);
+// Totals and charts are in USD; a wallet's own amounts are in its currency.
+export const money = (value: number, currency = "USD") => formatter(currency).format(value);
+export const moneyShort = (value: number) => formatter("USD", "compact").format(value);
 
 export const iso = (d: Date) =>
   `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
@@ -25,3 +30,6 @@ export function periodRange(period: Period, today = new Date()) {
   if (period === "year") start.setMonth(0, 1);
   return { start: iso(start), end: iso(today) };
 }
+
+export const currencySymbol = (currency: string) =>
+  formatter(currency).formatToParts(0).find((p) => p.type === "currency")?.value ?? currency;

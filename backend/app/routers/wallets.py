@@ -1,6 +1,7 @@
 from fastapi import APIRouter, HTTPException
 from sqlmodel import or_, select
 
+from app import fx
 from app.auth import CurrentUser, DbSession
 from app.models import Transaction, Wallet, WalletBase, WalletOut
 from app.recurring import post_due
@@ -20,12 +21,37 @@ def get_owned(db: DbSession, user: CurrentUser, wallet_id: int) -> Wallet:
 def list_wallets(db: DbSession, user: CurrentUser) -> list[WalletOut]:
     post_due(db, user.id)
     totals = balances(db, user.id)
+    rates, _ = fx.user_rates(db, user.id)
+    txns = db.exec(select(Transaction.wallet_id, Transaction.to_wallet_id).where(Transaction.user_id == user.id)).all()
+    in_use = {wallet_id for pair in txns for wallet_id in pair}
     wallets = db.exec(select(Wallet).where(Wallet.user_id == user.id).order_by(Wallet.id))
-    return [WalletOut(**w.model_dump(), balance=totals.get(w.id, 0)) for w in wallets]
+    return [
+        WalletOut(
+            **w.model_dump(),
+            balance=totals.get(w.id, 0),
+            balance_usd=round(rates.usd(totals.get(w.id, 0), w.currency), 2),
+            in_use=w.id in in_use,
+        )
+        for w in wallets
+    ]
+
+
+def used(db: DbSession, wallet_id: int) -> bool:
+    stmt = select(Transaction).where(or_(Transaction.wallet_id == wallet_id, Transaction.to_wallet_id == wallet_id))
+    return db.exec(stmt).first() is not None
+
+
+def check_currency(db: DbSession, data: WalletBase):
+    data.currency = data.currency.upper()
+    try:
+        fx.refresh(db, data.currency, strict=True)
+    except ValueError as err:
+        raise HTTPException(422, str(err))
 
 
 @router.post("")
 def create_wallet(data: WalletBase, db: DbSession, user: CurrentUser) -> Wallet:
+    check_currency(db, data)
     wallet = Wallet.model_validate(data, update={"user_id": user.id})
     db.add(wallet)
     db.commit()
@@ -36,6 +62,10 @@ def create_wallet(data: WalletBase, db: DbSession, user: CurrentUser) -> Wallet:
 @router.put("/{wallet_id}")
 def update_wallet(wallet_id: int, data: WalletBase, db: DbSession, user: CurrentUser) -> Wallet:
     wallet = get_owned(db, user, wallet_id)
+    if data.currency.upper() != wallet.currency:
+        if used(db, wallet_id):
+            raise HTTPException(409, "This wallet already has transactions, so its currency can't change.")
+        check_currency(db, data)
     wallet.sqlmodel_update(data.model_dump())
     db.commit()
     db.refresh(wallet)
@@ -45,8 +75,7 @@ def update_wallet(wallet_id: int, data: WalletBase, db: DbSession, user: Current
 @router.delete("/{wallet_id}")
 def delete_wallet(wallet_id: int, db: DbSession, user: CurrentUser):
     wallet = get_owned(db, user, wallet_id)
-    used = db.exec(select(Transaction).where(or_(Transaction.wallet_id == wallet_id, Transaction.to_wallet_id == wallet_id))).first()
-    if used:
+    if used(db, wallet_id):
         raise HTTPException(409, "Move or delete this wallet's transactions first.")
     db.delete(wallet)
     db.commit()

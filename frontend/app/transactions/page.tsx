@@ -1,14 +1,15 @@
 "use client";
 
 import dynamic from "next/dynamic";
-import { useCallback, useEffect, useState } from "react";
+import { Suspense, useCallback, useEffect, useState } from "react";
+import { useSearchParams } from "next/navigation";
 import Shell from "@/components/Shell";
 import { PinIcon } from "@/components/LocationField";
 import Toast from "@/components/Toast";
 import ImportDialog from "@/components/ImportDialog";
 import ReceiptViewer, { ReceiptButton } from "@/components/ReceiptViewer";
 import TransactionModal from "@/components/TransactionModal";
-import { api, Category, Transaction, Wallet } from "@/lib/api";
+import { api, Category, Goal, SharedWallet, Transaction, Wallet, parseShares } from "@/lib/api";
 import { money, shortDate, slotColor } from "@/lib/format";
 
 // Leaflet needs the browser's window, so the map only loads on the client.
@@ -17,7 +18,21 @@ const SpendingMap = dynamic(() => import("@/components/SpendingMap"), {
   loading: () => <p className="p-10 text-center text-ink-2">Loading map</p>,
 });
 
+// ?wallet= comes through useSearchParams, not window.location (see app/shared/page.tsx).
 export default function TransactionsPage() {
+  return (
+    <Suspense>
+      <TransactionsFromUrl />
+    </Suspense>
+  );
+}
+
+function TransactionsFromUrl() {
+  const wallet = useSearchParams().get("wallet") ?? "";
+  return <Transactions key={wallet} wallet={wallet} />;
+}
+
+function Transactions({ wallet }: { wallet: string }) {
   const [transactions, setTransactions] = useState<Transaction[] | null>(null);
   const [categories, setCategories] = useState<Category[]>([]);
   const [wallets, setWallets] = useState<Wallet[]>([]);
@@ -27,24 +42,33 @@ export default function TransactionsPage() {
     start: "",
     end: "",
     tag: "",
-    wallet: typeof window === "undefined" ? "" : (new URLSearchParams(window.location.search).get("wallet") ?? ""),
+    wallet,
   }));
   const [importing, setImporting] = useState(false);
   const [viewing, setViewing] = useState<Transaction | null>(null);
   const [editing, setEditing] = useState<Transaction | "new" | null>(null);
   const [view, setView] = useState<"list" | "map">("list");
   const [deleted, setDeleted] = useState<Transaction | null>(null);
+  const [goals, setGoals] = useState<Goal[]>([]);
+  const [shared, setShared] = useState<SharedWallet[]>([]);
+  const [myId, setMyId] = useState<number | null>(null);
 
   const load = useCallback(async () => {
     const params = new URLSearchParams(Object.entries(filters).filter(([, v]) => v));
-    const [txns, cats, ws] = await Promise.all([
+    const [txns, cats, ws, gs, sh, me] = await Promise.all([
       api<Transaction[]>(`/transactions?${params}`),
       api<Category[]>("/categories"),
       api<Wallet[]>("/wallets"),
+      api<Goal[]>("/goals"),
+      api<SharedWallet[]>("/shared"),
+      api<{ id: number }>("/auth/me"),
     ]);
     setTransactions(txns);
     setCategories(cats);
     setWallets(ws);
+    setGoals(gs);
+    setShared(sh);
+    setMyId(me.id);
   }, [filters]);
 
   useEffect(() => {
@@ -52,8 +76,15 @@ export default function TransactionsPage() {
     return () => clearTimeout(timer);
   }, [load]);
 
-  const byId = new Map(categories.map((c) => [c.id, c]));
+  // Shared expenses use their shared wallet owner's categories.
+  const byId = new Map([...shared.flatMap((s) => s.categories), ...categories].map((c) => [c.id, c]));
   const walletName = (id: number | null) => wallets.find((w) => w.id === id)?.name ?? "";
+  const currencyOf = (id: number | null) => wallets.find((w) => w.id === id)?.currency;
+  // A transfer seen from its destination wallet shows what arrived there.
+  const shown = (t: Transaction) =>
+    t.to_amount && filters.wallet === String(t.to_wallet_id)
+      ? money(t.to_amount, currencyOf(t.to_wallet_id))
+      : money(t.amount, currencyOf(t.wallet_id));
   const setFilter = (key: keyof typeof filters) => (e: React.ChangeEvent<HTMLInputElement | HTMLSelectElement>) =>
     setFilters({ ...filters, [key]: e.target.value });
 
@@ -68,7 +99,7 @@ export default function TransactionsPage() {
     if (!deleted) return;
     const { id: _id, recurring_id: _recurring, ...body } = deleted;
     setDeleted(null);
-    await api("/transactions", { method: "POST", json: body });
+    await api("/transactions", { method: "POST", json: { ...body, shares: deleted.shared_wallet_id ? parseShares(deleted.shared_members) : null } });
     load();
   }
 
@@ -113,7 +144,7 @@ export default function TransactionsPage() {
           <li key={i} className="flex items-center gap-1.5 whitespace-nowrap">
             <span className="h-2 w-2 rounded-sm" style={{ background: slotColor(p.category?.color_slot) }} />
             {p.category?.name ?? "Uncategorized"}
-            {p.amount !== null && <span className="text-ink-2 tnum">{money(p.amount)}</span>}
+            {p.amount !== null && <span className="text-ink-2 tnum">{money(p.amount, currencyOf(t.wallet_id))}</span>}
           </li>
         ))}
       </ul>
@@ -203,7 +234,7 @@ export default function TransactionsPage() {
               No transactions match these filters. Clear a filter or add a transaction.
             </p>
           ) : view === "map" ? (
-            <SpendingMap transactions={transactions} categories={byId} />
+            <SpendingMap transactions={transactions} categories={byId} currencyOf={currencyOf} />
           ) : (
             <table className="w-full text-sm">
               <thead className="text-left text-ink-2">
@@ -238,6 +269,17 @@ export default function TransactionsPage() {
                         )}
                       </span>
                       {t.notes && <span className="block max-w-32 truncate text-xs sm:max-w-56 text-ink-2">{t.notes}</span>}
+                      {t.shared_wallet_id && t.shared_members && myId !== null && (
+                        <span className="block max-w-32 truncate text-xs sm:max-w-56 text-ink-2">
+                          Shared in {shared.find((s) => s.id === t.shared_wallet_id)?.name}, your share{" "}
+                          {money((t.amount * (parseShares(t.shared_members)[myId] ?? 0)) / 100, currencyOf(t.wallet_id))}
+                        </span>
+                      )}
+                      {t.goal_id && (
+                        <span className="block max-w-32 truncate text-xs sm:max-w-56 text-ink-2">
+                          Goal: {goals.find((g) => g.id === t.goal_id)?.name}
+                        </span>
+                      )}
                       {t.place && (
                         <span className="flex items-center gap-1 text-xs text-ink-2">
                           <PinIcon size={12} />
@@ -266,7 +308,7 @@ export default function TransactionsPage() {
                       }`}
                     >
                       {sign(t)}
-                      {money(t.amount)}
+                      {shown(t)}
                       <div className="mt-1 text-xs font-normal sm:hidden">{actions(t)}</div>
                     </td>
                     <td className="hidden px-3 py-3 sm:px-4 text-right whitespace-nowrap sm:table-cell">{actions(t)}</td>

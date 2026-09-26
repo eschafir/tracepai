@@ -219,6 +219,45 @@ export function ComparisonChart({ data }: { data: ComparisonPoint[] }) {
   );
 }
 
+export type NetWorthPoint = { date: string; assets: number; debts: number; net: number };
+
+const NET_SERIES = [
+  { key: "net", label: "Net worth", color: "var(--series-1)" },
+  { key: "assets", label: "Assets", color: "var(--series-2)", dashed: true },
+  { key: "debts", label: "Debts", color: "var(--series-3)", dashed: true },
+] as const;
+
+// Month-end points, plus today as the last one. All values are USD.
+export function NetWorthChart({ data }: { data: NetWorthPoint[] }) {
+  const label = (d: unknown) => monthLabel(String(d).slice(0, 7));
+  return (
+    <>
+      <LegendKey items={NET_SERIES.map(({ label, color, ...s }) => ({ label, color, dashed: "dashed" in s }))} />
+      <ResponsiveContainer width="100%" height={220}>
+        <LineChart data={data} margin={{ top: 4, right: 8, left: 0, bottom: 0 }}>
+          <CartesianGrid vertical={false} stroke="var(--grid)" />
+          <XAxis dataKey="date" {...axis} tickFormatter={label} minTickGap={32} />
+          <YAxis {...axis} axisLine={false} tickFormatter={moneyShort} width={56} />
+          <Tooltip {...tooltip} labelFormatter={(d) => (d === data.at(-1)?.date ? "Today" : `End of ${label(d)}`)} />
+          {NET_SERIES.map((s) => (
+            <Line
+              key={s.key}
+              type="monotone"
+              dataKey={s.key}
+              name={s.label}
+              stroke={s.color}
+              strokeWidth={2}
+              strokeDasharray={"dashed" in s ? "5 4" : undefined}
+              dot={false}
+              activeDot={{ r: 5, strokeWidth: 2, stroke: "var(--panel)" }}
+            />
+          ))}
+        </LineChart>
+      </ResponsiveContainer>
+    </>
+  );
+}
+
 export function RankedBars({ rows }: { rows: { key: string | number; label: string; sub: string; value: number; display: string }[] }) {
   const max = Math.max(...rows.map((r) => r.value), 1);
   if (!rows.length) return <Empty>Nothing to rank in this period.</Empty>;
@@ -251,10 +290,13 @@ export type BudgetStatus = {
   spent: number;
   percent: number;
   days_remaining: number;
+  projected: number;
+  alert: "over" | "pace" | null;
 };
 
 function budgetState(b: BudgetStatus) {
   if (b.percent >= 100) return { color: "var(--critical)", icon: "!", label: `Over by ${money(b.spent - b.limit)}` };
+  if (b.alert === "pace") return { color: "var(--warning)", icon: "!", label: `On pace to go over by ${money(b.projected - b.limit)}` };
   if (b.percent >= 85) return { color: "var(--warning)", icon: "!", label: "Close to limit" };
   return { color: "var(--series-1)", icon: null, label: `${money(b.limit - b.spent)} left` };
 }

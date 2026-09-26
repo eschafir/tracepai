@@ -31,46 +31,95 @@ def test_months_until():
     assert months_until(dt.date(2026, 1, 1), dt.date(2026, 9, 24)) == 1
 
 
+def balances(client):
+    return {w["name"]: w["balance"] for w in client.get("/api/wallets").json()}
+
+
 def test_seeded_goals(client):
     goals = {g["name"]: g for g in client.get("/api/goals").json()}
     assert {"Lisbon trip", "Emergency fund"} <= set(goals)
-    assert goals["Lisbon trip"]["saved"] > 0 and goals["Lisbon trip"]["monthly_needed"] > 0
+    assert goals["Lisbon trip"]["saved"] == 1000 and goals["Lisbon trip"]["monthly_needed"] > 0
+    assert goals["Emergency fund"]["saved"] == 3000
     assert goals["Emergency fund"]["target_date"] is None and goals["Emergency fund"]["monthly_needed"] is None
+    assert goals["Lisbon trip"]["wallet_id"] == wallet(client, "Savings") and goals["Lisbon trip"]["transfer_count"] == 3
 
 
-def test_goal_lifecycle(client):
+def test_goal_money_moves_between_wallets(client):
+    checking, savings = wallet(client, "Checking"), wallet(client, "Savings")
     target = advance_months(TODAY, 3)
-    goal = client.post("/api/goals", json={"name": "Laptop", "target_amount": 1500, "target_date": target.isoformat(), "color_slot": 5}).json()
+    goal = client.post("/api/goals", json={"name": "Laptop", "target_amount": 1500, "target_date": target.isoformat(),
+                                           "color_slot": 5, "wallet_id": savings}).json()
     assert goal["saved"] == 0 and goal["percent"] == 0 and goal["months_left"] == 3 and goal["monthly_needed"] == 500
+    url = f"/api/goals/{goal['id']}/contributions"
+    before = balances(client)
 
-    goal = client.post(f"/api/goals/{goal['id']}/contributions", json={"date": TODAY.isoformat(), "amount": 300, "note": "Bonus"}).json()
+    goal = client.post(url, json={"date": TODAY.isoformat(), "amount": 300, "direction": "in", "wallet_id": checking, "note": "Bonus"}).json()
     assert (goal["saved"], goal["percent"], goal["remaining"], goal["monthly_needed"]) == (300, 20, 1200, 400)
-    goal = client.post(f"/api/goals/{goal['id']}/contributions", json={"date": TODAY.isoformat(), "amount": -100}).json()
-    assert goal["saved"] == 200
+    after = balances(client)
+    assert after["Checking"] == round(before["Checking"] - 300, 2) and after["Savings"] == round(before["Savings"] + 300, 2)
 
-    history = client.get(f"/api/goals/{goal['id']}/contributions").json()
-    assert [c["amount"] for c in history] == [-100, 300]
+    goal = client.post(url, json={"date": TODAY.isoformat(), "amount": 100, "direction": "out", "wallet_id": checking}).json()
+    assert goal["saved"] == 200
+    assert balances(client)["Savings"] == round(before["Savings"] + 200, 2)
+
+    history = client.get(url).json()
+    assert [(c["amount"], c["wallet_id"]) for c in history] == [(-100, checking), (300, checking)]
+    txn = next(t for t in client.get("/api/transactions", params={"q": "Laptop"}).json() if t["id"] == history[1]["id"])
+    assert (txn["kind"], txn["wallet_id"], txn["to_wallet_id"], txn["goal_id"], txn["notes"]) == ("transfer", checking, savings, goal["id"], "Bonus")
+
+    # Removing a history row deletes its transfer.
     goal = client.delete(f"/api/goals/contributions/{history[0]['id']}").json()
     assert goal["saved"] == 300
+    assert balances(client)["Savings"] == round(before["Savings"] + 300, 2)
 
-    goal = client.post(f"/api/goals/{goal['id']}/contributions", json={"date": TODAY.isoformat(), "amount": 1300}).json()
-    assert goal["percent"] > 100 and goal["remaining"] == 0 and goal["monthly_needed"] is None
+    # Editing or deleting the transfer on Transactions changes the goal.
+    body = {k: v for k, v in txn.items() if k not in ("id", "recurring_id")}
+    assert client.put(f"/api/transactions/{txn['id']}", json={**body, "amount": 450}).status_code == 200
+    assert client.get(url).json()[0]["amount"] == 450
+    wrong = client.put(f"/api/transactions/{txn['id']}", json={**body, "to_wallet_id": wallet(client, "Cash")})
+    assert wrong.status_code == 422 and "Savings" in wrong.json()["detail"]
+    assert client.delete(f"/api/transactions/{txn['id']}").status_code == 200
+    assert client.get(url).json() == []
 
-    edited = client.put(f"/api/goals/{goal['id']}", json={"name": "New laptop", "target_amount": 2000, "color_slot": 5}).json()
-    assert edited["name"] == "New laptop" and edited["percent"] == 80 and edited["months_left"] is None
+    # The wallet is locked once money has moved.
+    client.post(url, json={"date": TODAY.isoformat(), "amount": 50, "direction": "in", "wallet_id": checking})
+    edit = {"name": "New laptop", "target_amount": 2000, "color_slot": 5, "wallet_id": savings}
+    edited = client.put(f"/api/goals/{goal['id']}", json=edit).json()
+    assert edited["name"] == "New laptop" and edited["saved"] == 50 and edited["months_left"] is None
+    assert client.put(f"/api/goals/{goal['id']}", json={**edit, "wallet_id": checking}).status_code == 422
 
-    assert client.post(f"/api/goals/{goal['id']}/contributions", json={"date": TODAY.isoformat(), "amount": 0}).status_code == 422
+    # Deleting the goal keeps its transfers.
+    transfer_id = client.get(url).json()[0]["id"]
     assert client.delete(f"/api/goals/{goal['id']}").status_code == 200
-    assert client.get(f"/api/goals/{goal['id']}/contributions").status_code == 404
-    with app_db.Session(app_db.engine) as session:
-        from sqlmodel import select
-        from app.models import GoalContribution
-        assert not session.exec(select(GoalContribution).where(GoalContribution.goal_id == goal["id"])).all()
+    assert client.get(url).status_code == 404
+    kept = next(t for t in client.get("/api/transactions").json() if t["id"] == transfer_id)
+    assert kept["goal_id"] is None and kept["amount"] == 50
 
 
 def test_goal_validation(client):
+    checking, savings = wallet(client, "Checking"), wallet(client, "Savings")
     assert client.post("/api/goals", json={"name": "X", "target_amount": 0}).status_code == 422
     assert client.post("/api/goals", json={"name": "X", "target_amount": 10, "color_slot": 9}).status_code == 422
+
+    no_wallet = client.post("/api/goals", json={"name": "No wallet", "target_amount": 10}).json()
+    add = {"date": TODAY.isoformat(), "amount": 5, "direction": "in", "wallet_id": checking}
+    assert client.post(f"/api/goals/{no_wallet['id']}/contributions", json=add).status_code == 422
+    # A goal without transfers can still change wallet.
+    moved = client.put(f"/api/goals/{no_wallet['id']}", json={"name": "No wallet", "target_amount": 10, "wallet_id": savings})
+    assert moved.status_code == 200 and moved.json()["wallet_id"] == savings
+
+    url = f"/api/goals/{no_wallet['id']}/contributions"
+    assert client.post(url, json={**add, "wallet_id": savings}).status_code == 422
+    assert client.post(url, json={**add, "amount": 0}).status_code == 422
+    assert client.post(url, json={**add, "direction": "sideways"}).status_code == 422
+
+    expense = {"date": TODAY.isoformat(), "amount": 5, "kind": "expense", "wallet_id": checking, "goal_id": no_wallet["id"]}
+    assert client.post("/api/transactions", json=expense).status_code == 422
+    elsewhere = {**expense, "kind": "transfer", "to_wallet_id": wallet(client, "Cash")}
+    assert client.post("/api/transactions", json=elsewhere).status_code == 422
+    assert client.post("/api/transactions", json={**elsewhere, "goal_id": 999999}).status_code == 422
+    assert client.post("/api/transactions", json={**elsewhere, "to_wallet_id": savings}).status_code == 200
+    client.delete(f"/api/goals/{no_wallet['id']}")
 
 
 def advance_months(date: dt.date, n: int) -> dt.date:
@@ -247,7 +296,7 @@ def test_add_missing_columns(tmp_path, monkeypatch):
     app_db.add_missing_columns()
     con = sqlite3.connect(path)
     columns = {row[1] for row in con.execute('PRAGMA table_info("transaction")')}
-    assert {"place", "lat", "lng", "receipt_path", "to_wallet_id"} <= columns
+    assert {"place", "lat", "lng", "receipt_path", "to_wallet_id", "goal_id"} <= columns
     assert con.execute('SELECT merchant, amount, place FROM "transaction"').fetchall() == [("Old shop", 9.5, None)]
     app_db.add_missing_columns()  # running again changes nothing
     con.close()

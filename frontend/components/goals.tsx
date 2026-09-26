@@ -4,10 +4,10 @@ import { iso, money, parseIso, slotColor } from "@/lib/format";
 const monthYear = (d: string) => parseIso(d).toLocaleDateString("en-US", { month: "short", year: "numeric" });
 
 export function goalStatus(g: Goal) {
-  if (g.remaining <= 0) return g.saved > g.target_amount ? `Reached, ${money(g.saved - g.target_amount)} over the target.` : "Reached.";
-  if (g.target_date && g.target_date < iso(new Date())) return `The date has passed. ${money(g.remaining)} to go.`;
-  if (g.monthly_needed && g.target_date) return `Save ${money(g.monthly_needed)} a month to reach it by ${monthYear(g.target_date)}.`;
-  return `${money(g.remaining)} to go.`;
+  if (g.remaining <= 0) return g.saved > g.target_amount ? `Reached, ${money(g.saved - g.target_amount, g.currency)} over the target.` : "Reached.";
+  if (g.target_date && g.target_date < iso(new Date())) return `The date has passed. ${money(g.remaining, g.currency)} to go.`;
+  if (g.monthly_needed && g.target_date) return `Save ${money(g.monthly_needed, g.currency)} a month to reach it by ${monthYear(g.target_date)}.`;
+  return `${money(g.remaining, g.currency)} to go.`;
 }
 
 export function GoalBar({ goal }: { goal: Goal }) {
@@ -40,7 +40,7 @@ export function GoalsPanel({ goals }: { goals: Goal[] }) {
           <div className="mb-1.5 flex items-baseline gap-2">
             <span className="font-medium">{g.name}</span>
             <span className="ml-auto tnum text-ink-2">
-              {money(g.saved)} of {money(g.target_amount)}
+              {money(g.saved, g.currency)} of {money(g.target_amount, g.currency)}
             </span>
           </div>
           <GoalBar goal={g} />

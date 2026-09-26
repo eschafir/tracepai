@@ -20,9 +20,11 @@ function FitToMarkers({ points }: { points: Located[] }) {
 export default function SpendingMap({
   transactions,
   categories,
+  currencyOf,
 }: {
   transactions: Transaction[];
   categories: Map<number, Category>;
+  currencyOf: (walletId: number) => string | undefined;
 }) {
   const points = transactions.filter((t): t is Located => t.lat != null && t.lng != null);
 
@@ -59,13 +61,13 @@ export default function SpendingMap({
               }}
             >
               <Tooltip direction="top" offset={[0, -6]}>
-                {t.merchant || t.place}, {money(t.amount)}
+                {t.merchant || t.place}, {money(t.amount, currencyOf(t.wallet_id))}
               </Tooltip>
               <Popup>
                 <strong>{t.merchant || "No merchant"}</strong>
                 <br />
                 {t.kind === "income" ? "+" : "−"}
-                {money(t.amount)} on {shortDate(t.date)}
+                {money(t.amount, currencyOf(t.wallet_id))} on {shortDate(t.date)}
                 <br />
                 {categoryName}
                 {t.place && (

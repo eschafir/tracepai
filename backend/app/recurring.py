@@ -31,7 +31,7 @@ def post_due(db: Session, user_id: int, today: dt.date | None = None):
         rules = db.exec(select(RecurringRule).where(RecurringRule.user_id == user_id, RecurringRule.next_date <= today)).all()
         for rule in rules:
             while rule.next_date <= today:
-                fields = rule.model_dump(exclude={"id", "user_id", "frequency", "next_date"})
+                fields = rule.model_dump(exclude={"id", "user_id", "frequency", "next_date", "price_seen"})
                 db.add(Transaction(**fields, user_id=user_id, date=rule.next_date, recurring_id=rule.id))
                 rule.next_date = advance(rule.next_date, rule.frequency)
         if rules:
@@ -76,3 +76,26 @@ def suggestions(db: Session, user_id: int) -> list[dict]:
             }
         )
     return sorted(found, key=lambda s: s["next_date"])
+
+
+def price_changes(db: Session, user_id: int, today: dt.date | None = None) -> list[dict]:
+    """Expense items whose latest real charge (last 45 days, same wallet and merchant) differs from the saved amount."""
+    today = today or dt.date.today()
+    rules = db.exec(select(RecurringRule).where(RecurringRule.user_id == user_id, RecurringRule.kind == Kind.expense)).all()
+    recent = db.exec(
+        select(Transaction).where(
+            Transaction.user_id == user_id, Transaction.kind == Kind.expense, Transaction.date >= today - dt.timedelta(days=45)
+        )
+    ).all()
+    found = []
+    for rule in rules:
+        key = normalize(rule.merchant)
+        matches = [t for t in recent if t.wallet_id == rule.wallet_id and key and normalize(t.merchant) == key]
+        if not matches:
+            continue
+        # A charge the item didn't post itself (an import, a manual entry) is the best evidence of the real price.
+        latest = max(matches, key=lambda t: (t.date, t.recurring_id != rule.id, t.id))
+        if abs(latest.amount - rule.amount) > max(0.01 * rule.amount, 0.5) and latest.amount != rule.price_seen:
+            found.append({"rule_id": rule.id, "merchant": rule.merchant, "wallet_id": rule.wallet_id,
+                          "old": rule.amount, "new": latest.amount, "date": latest.date})
+    return found

@@ -12,6 +12,7 @@ const NAV = [
   { href: "/budgets/", label: "Budgets" },
   { href: "/goals/", label: "Goals" },
   { href: "/recurring/", label: "Recurring" },
+  { href: "/review/", label: "Year" },
 ];
 
 export default function Shell({ children, actions }: { children: React.ReactNode; actions?: React.ReactNode }) {
@@ -54,6 +55,7 @@ export default function Shell({ children, actions }: { children: React.ReactNode
         </nav>
         <div className="ml-auto flex items-center gap-3">
           {actions}
+          <span className="text-sm text-ink-2">{user}</span>
           <button onClick={logout} className="text-sm text-ink-2 hover:text-ink" title={`Signed in as ${user}`}>
             Log out
           </button>

@@ -15,7 +15,7 @@ def test_auth_required_and_bad_login(client):
 
 
 def test_me(client):
-    assert client.get("/api/auth/me").json() == {"username": "user"}
+    assert client.get("/api/auth/me").json() == {"id": 1, "username": "user"}
 
 
 def wallet_id(client, name="Checking"):
@@ -98,6 +98,6 @@ def test_analytics(client):
 def test_export(client):
     csv = client.get("/api/export", params={"format": "csv"})
     assert csv.headers["content-type"].startswith("text/csv")
-    assert csv.text.startswith("id,date,kind,amount,merchant,category,wallet,to_wallet")
+    assert csv.text.startswith("id,date,kind,amount,currency,to_amount,merchant,category,wallet,to_wallet")
     assert "Groceries: 100.0; Household: 50.0" in csv.text
     assert isinstance(client.get("/api/export", params={"format": "json"}).json(), list)

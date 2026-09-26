@@ -583,3 +583,363 @@ Built and tested: 64 backend tests pass, and the browser flows pass in the test 
 Changes from the plan:
 - The map uses the transaction list the page already loads, so every list filter also applies to the map. The separate `/analytics/places` endpoint was dropped.
 - Undo shows "Deleted <merchant>." with Undo, rather than "Transaction deleted."
+
+---
+
+# TracepAI: Goal money moves between wallets
+
+## Context
+Today, "Add money" on a goal only records a number. No wallet changes, so the same money counts both in a wallet balance and as "saved" in the goal, and the app can't tell where the goal's money actually is.
+
+After this change, every goal is kept in one wallet (for example Savings).
+- **Add money** picks a source wallet and records a real transfer from that wallet to the goal's wallet.
+- **Take out** records a transfer from the goal's wallet back to a wallet you pick.
+- **The goal's saved amount** is the sum of those transfers: money in minus money out.
+
+Balances, the goal and the Transactions list always agree, because they all read the same transfers.
+
+Your data on port 8001 (checked read-only on 2026-09-25): one goal ("My Monthly Intended Savings"), no contributions, and the wallets Wells Fargo Checking, BOFA Credit card and Galicia USD. There's no savings wallet yet, so you'd create one on the Wallets page, or keep the goal in any existing wallet. **No money is moved and no balance changes on deploy.**
+
+## Decisions
+- **A goal is a label on transfers, not a separate ledger.**
+  - A goal contribution is an ordinary `Transaction` of kind `transfer` with a new `goal_id`.
+  - The `GoalContribution` table goes away. Your database has no rows in it; the empty table is left in place and unused.
+- **Direction:** a linked transfer *into* the goal's wallet adds to the goal, and one *out of* it takes away.
+- **Locked wallet:** once a goal has transfers, its wallet can't be changed; changing it would flip the meaning of old transfers. Trying to change it returns a clear 422.
+- **Existing goal:** it has no wallet yet. Its card says "Choose where this goal's money is kept" and opens the edit form; Add money is unavailable until a wallet is chosen.
+- **Deleting a goal** keeps its transfers, because the money really moved. They just lose the goal label.
+- **Removing a contribution** from the goal's history deletes that transfer, so the wallet balances go back.
+- **Transactions page:** editing or deleting a linked transfer there updates the goal automatically. An edit that no longer touches the goal's wallet is rejected with a message naming the goal and wallet.
+
+## Backend
+- **`app/models.py`:**
+  - `Goal` gains a nullable `wallet_id`.
+  - `TransactionBase` gains a nullable `goal_id` (`foreign_key="goal.id"`).
+  - `add_missing_columns()` adds both columns on start-up; no migration.
+  - `GoalContribution` and `ContributionBase` are removed.
+  - The new `ContributionIn` has date, amount (> 0), direction (`in` / `out`), `other_wallet_id` and note.
+- **`app/routers/goals.py`:**
+  - `progress()` sums linked transfers: + when `to_wallet_id == goal.wallet_id`, − when `wallet_id == goal.wallet_id`.
+  - `POST /goals/{id}/contributions` creates the transfer. The merchant is the goal name, notes hold the note, and the wallets are `other -> goal wallet` for `in` and `goal wallet -> other` for `out`. It's rejected when the goal has no wallet or when the other wallet is the goal's wallet.
+  - `GET /goals/{id}/contributions` lists the linked transfers as `{id, date, amount (signed), note, wallet_id}`, where `id` is the transaction id.
+  - `DELETE /goals/contributions/{id}` deletes the transaction.
+  - `PUT /goals/{id}` rejects a wallet change once transfers exist.
+  - `DELETE /goals/{id}` sets `goal_id = null` on its transfers, then deletes the goal.
+- **`app/routers/transactions.py`:** on create and update, if `goal_id` is set it must be the user's goal, the transaction must be a transfer, and one side must be the goal's wallet (422 otherwise).
+- **`app/seed.py`** (fresh installs and the test container only):
+  - The two goals are kept in Savings.
+  - Their contributions become Checking -> Savings transfers.
+  - The Savings opening balance is lowered by the same total, so the seeded balances stay the same.
+
+## Frontend
+- **`lib/api.ts`:**
+  - `GoalInput` gains `wallet_id`.
+  - `Contribution` changes to the shape above.
+  - `TransactionInput` gains `goal_id`.
+- **`app/goals/page.tsx`:**
+  - The goal form gets a "Kept in" wallet select, required and preselecting the first savings wallet. It's disabled with a short note once the goal has transfers.
+  - The card shows "Kept in Savings".
+  - Add money adds a "From" wallet select (the goal's wallet excluded, defaulting to the first bank wallet), and Take out adds a "To" select.
+  - History rows show the other wallet ("from Checking" / "to Checking").
+  - The delete confirmation reads "Delete goal (its transfers stay in Transactions)".
+  - Removing a history row says it also removes the transfer.
+- **`components/TransactionModal.tsx`:** keeps the transaction's `goal_id` when editing, so saving a linked transfer doesn't unlink it.
+- **`app/transactions/page.tsx`:** linked transfers show the goal name under the merchant ("Goal: Lisbon trip"). Undo already re-posts the whole transaction, `goal_id` included.
+
+## Tests
+- **Backend:** rewrite the goal tests in `test_goals_places_summary.py`:
+  - Adding $300 from Checking raises Savings by $300, lowers Checking by $300, and makes the goal's saved $300.
+  - Taking out $100 reverses it.
+  - Removing a history row deletes the transfer and restores the balances.
+  - Editing the transfer amount on `/transactions` changes the goal.
+  - Deleting the transfer on `/transactions` removes it from the goal.
+  - Deleting the goal keeps the transfers with `goal_id` null.
+  - A wallet change with transfers present is rejected; without transfers it's allowed.
+  - Validation: no goal wallet, the same wallet on both sides, a zero amount, `goal_id` on an expense, and a transfer that doesn't touch the goal's wallet are all rejected.
+  - The seeded balances are unchanged from before.
+  - `add_missing_columns` adds `goal.wallet_id` and `transaction.goal_id` to an old database.
+- **Browser, in the test container on 8002:**
+  - Create a goal kept in Savings, add $300 from Checking, and check the goal, the Wallets balances and the Transactions list.
+  - Take out, remove a history row, and edit the transfer on Transactions.
+  - Delete the goal.
+  - Check the existing-goal prompt on a goal with no wallet.
+  - Screenshots on desktop and at phone width, in light and dark mode.
+
+## Deploying to your app on 8001
+1. Back up `tracepai.db`.
+2. Rebuild and restart, keeping the volume.
+3. Check that the transaction count and all wallet balances are unchanged, and that the new columns exist.
+
+## Status (2026-09-25)
+
+Built and tested: 66 backend tests pass, the browser flows pass on port 8002, and the migration was checked on a copy of the real database. Not yet deployed to 8001.
+
+Changes from the plan:
+- Goals also return `transfer_count`, so the edit form knows when to lock the wallet.
+- The seeded balances stay the same because the Checking and Savings opening balances were adjusted.
+
+---
+
+# TracepAI: currencies, net worth, budget pace, goal auto-transfers, price changes, budget styles, year in review, shared wallets
+
+## Context
+You picked 8 of the suggested features. Your decisions:
+- **Currencies:** totals and charts in USD, and wallets in any currency.
+- **ARS rate:** the official BNA rate.
+- **Shared wallets:** a real sign-up page, so each person has their own login.
+- **Delivery:** three batches, deployed one at a time.
+
+Today every amount is treated as USD, so a pesos wallet would be added to the totals as if it were dollars. Batch 1 fixes that first, because the net worth chart and everything in batch 2 depend on correct totals.
+
+**Carried over for every batch:**
+- Log every change in `docs/CHANGES.md` and append each batch's plan to `docs/PLAN.md` with a status section, as before.
+- Your real data on 8001 is never reset. New columns are added on start-up. Test in a separate container on 8002.
+- Back up `tracepai.db` before each deploy. The last rebuild of 8001 was blocked by a permission check, so each deploy ends with the command for you to run (`! PORT=8001 ./scripts/start-mac.sh`) unless you allow it.
+
+---
+
+## Batch 1: Multi-currency wallets and net worth
+
+### Exchange rates: new `backend/app/fx.py`
+- **New table `FxRate`:** `currency`, `date` and `per_usd` (units of the currency per 1 USD). `currency` and `date` together are the primary key.
+- **Sources** (all checked; free, no API key):
+  - **ARS:** `api.argentinadatos.com/v1/cotizaciones/dolares/oficial`. It has the full daily BNA history since 2011; use `venta`.
+  - **The ~30 ECB currencies** (EUR, BRL, GBP, MXN, JPY, ...): `api.frankfurter.dev/v1/{start}..?base=USD&symbols=X`. It has daily history.
+  - **Any other currency** (CLP, UYU, COP, ...): `open.er-api.com/v6/latest/USD` has 166 currencies but only today's rate. History builds up from the day the wallet is created.
+- **`refresh(db, currency)`:**
+  - Fetches from the right source and stores the rates.
+  - Runs at most once a day per currency, serialized with a lock, like `post_due` in `app/recurring.py`.
+  - Uses a 5-second timeout. If the fetch fails, it logs the error and keeps using the stored rates.
+- **`Rates`:** loaded once per request. `usd(amount, currency, date)` uses the nearest rate on or before that date (weekends and holidays have no rate); for dates before the first stored rate, it uses the earliest one. USD is passed through unchanged.
+- **Endpoints:**
+  - `GET /fx/convert?amount&from&to&date` gives the estimate used to pre-fill "Received" fields.
+  - `GET /fx/currencies` lists the supported codes for the currency picker.
+
+### Model changes: `backend/app/models.py`
+- **`WalletBase.currency: str = "USD"`** (a 3-letter code).
+  - `add_missing_columns()` in `app/db.py` is extended to add a column's scalar default (`DEFAULT 'USD'`), so your 3 existing wallets become USD. This is a small generic change.
+  - Creating a wallet, or changing its currency, runs `refresh` first. It returns 422 if no rate can be found.
+  - The currency is locked once the wallet has transactions (409), the same rule as a goal's wallet.
+- **`Entry.to_amount: float | None`:** the amount received in the destination wallet's currency.
+  - It's required for a transfer between two wallets in different currencies, and must be null otherwise.
+  - It's checked in the transactions and recurring routers and in the goal contributions endpoint.
+  - Being on `Entry`, recurring transfers carry it too, and `post_due` copies it automatically.
+
+### Where the conversion applies
+- **`app/wallets.py`:**
+  - `wallet_deltas` stays in each wallet's own currency. The destination side uses `to_amount or amount`.
+  - `WalletOut` gains `currency` and `balance_usd`, the balance at the latest rate.
+- **`app/routers/analytics.py`:** every endpoint reports in USD.
+  - A helper converts each transaction by its wallet's currency and its date, and scales splits by the same ratio.
+  - This affects `categories`, `cashflow`, `budgets`, `merchants`, `comparison` and `summary`.
+  - `balance`, the live budget line, sums each wallet's balance converted at each day's rate.
+- **Budgets** are in USD.
+- **Goals** are counted in the currency of the wallet they're kept in. Money coming in counts `to_amount` when it's set.
+- **Export:** gains `currency` and `to_amount` columns.
+- **Import:** amounts are taken in the chosen wallet's currency.
+- **Receipt scans** fill the amount in the selected wallet's currency. The vision model doesn't detect currency, which is out of scope.
+
+### Net worth (feature 6)
+- **`GET /analytics/networth?months=24`:** a point at each month end plus today, each with `assets` (positive wallet balances), `debts` (negative ones, like cards) and `net`, all in USD at that date's rate. It also returns the current breakdown for each wallet.
+- **Dashboard:** a new "Net worth" panel shows the net line and the assets and debts series, built like `BalanceChart` in `frontend/components/charts.tsx`, plus a short per-wallet list with native and USD amounts.
+
+### Frontend
+- **`frontend/lib/format.ts`:** `money(value, currency = "USD")`, with the Intl formatters cached per currency.
+- **`app/wallets/page.tsx`:**
+  - A currency picker (text input with the supported codes as suggestions), locked with a note once the wallet has transactions.
+  - Each balance is shown in its own currency, with the USD equivalent under non-USD balances.
+- **`components/TransactionModal.tsx`:**
+  - The amount label shows the wallet's currency.
+  - A transfer between different currencies shows a required "Received (ARS)" field, pre-filled from `/fx/convert`.
+- **`components/RecurringForm.tsx`:** the same "Received" field for transfers.
+- **Goals page:** the Add money / Take out form shows "Received" when the two wallets' currencies differ.
+- **`app/transactions/page.tsx`:** amounts are shown in the wallet's currency.
+- **`app/page.tsx`:** the "All wallets" total uses `balance_usd`; today it adds native balances together. Chart totals are labeled USD.
+
+### Tests
+- **Backend:**
+  - `fx` with fake fetchers, following the pattern of the places tests: parsing each source, nearest-earlier lookup, once-a-day refresh, and a failed fetch keeping the stored rates.
+  - An EUR wallet: an expense shows converted in `categories`, `summary` and `budgets`.
+  - Cross-currency transfers: `to_amount` is required when currencies differ and rejected when they match; balances stay native; a recurring transfer posts `to_amount`.
+  - `networth` totals.
+  - The currency lock.
+  - `add_missing_columns` fills `USD` on an old wallet table.
+  - Rewriting the seed isn't needed: all its wallets are USD.
+- **Browser (8002):**
+  - Create a "Galicia ARS" wallet (a real rate call).
+  - Add an ARS 15,000 expense; the dashboard category total equals 15000 / the stored rate.
+  - Transfer USD to ARS with a Received amount; both balances are right.
+  - The net worth panel.
+  - Currency lock.
+  - Phone width in dark mode.
+- **Migration on a copy of your real database:** the transaction count and balances are unchanged, and all wallets are USD.
+
+---
+
+## Batch 2: Pace alerts, goal auto-transfers, price changes, budget styles, year in review
+
+### Budget pace alerts (feature 2)
+- **`/analytics/budgets`:** each row gains `projected` and `alert`.
+  - `projected` = spent + upcoming recurring charges in that category before the month ends + (spending not from recurring items / days elapsed x days left).
+  - Separating recurring charges keeps rent paid on day 1 from projecting 30x.
+- **When it alerts:**
+  - Only while the month is in progress and at least 5 days have passed.
+  - "On pace to go over by $X" when the projection is over the limit.
+  - "Over by $X" when the spending already is.
+- **Where it shows:** a banner at the top of the dashboard (the top 3 alerts, linking to Budgets) and a note on each budget row.
+- **In-app only:** real push notifications need HTTPS and a service worker, which this local setup doesn't have.
+
+### Monthly goal transfers (feature 3)
+- **`goal_id` moves from `TransactionBase` to `Entry`,** so recurring rules can carry it.
+  - `post_due` copies it.
+  - `check_linked` in `app/routers/goals.py` is also used when creating or editing recurring items.
+- **`POST /goals/{id}/contributions`** accepts `repeat: "monthly"` (for adding money only). It records today's transfer and creates a rule for next month.
+- **Goals page:**
+  - A "Repeat monthly" checkbox on Add money.
+  - The card shows "Adds $200 monthly from Checking" with a Stop button.
+  - The "Save $X a month" hint gets a "Set up" button that opens Add money with that amount filled in and Repeat checked.
+- **Recurring page:** shows "Goal: <name>".
+
+### Subscription price changes (feature 5)
+- **Detection, `price_changes()` in `app/recurring.py`:** for each expense rule, take the latest expense from the last 45 days in the same wallet with the same normalized merchant (`normalize` from `app/categorize.py`). Flag it if its amount differs from the rule's by more than 1% and more than $0.50.
+- **New nullable column `RecurringRule.price_seen`:** "Keep $15.49" stores the amount you dismissed, so the alert doesn't come back.
+- **Endpoint:** `GET /recurring/price-changes`.
+- **Recurring page:** "Netflix charged $17.99; this item says $15.49", with "Update to $17.99" and "Keep $15.49".
+- **Dashboard:** the same alerts appear in the alert banner.
+
+### Budget styles (feature 4)
+- **New columns:**
+  - `User.budget_style`: `limits` (the default), `zero_based` or `50_30_20`.
+  - `Category.group`: `need`, `want`, `savings` or null.
+- **Endpoints:** `GET` and `PUT /settings` for the budget style.
+- **Budgets page:** a style switch with three options:
+  - **Limits:** today's view.
+  - **Zero-based:** "This month's income $X, assigned $Y, left to assign $Z" (or "assigned $Z more than you earned"). Categories without a budget are listed with an Assign box. Unspent money doesn't roll over.
+  - **50/30/20:** targets are 50%, 30% and 20% of the month's income. Actual needs and wants come from the category groups; savings = income - needs - wants. It shows three bars, a group picker for each category, and a warning listing categories without a group.
+- **Seeded groups** (fresh installs only): Rent, Groceries, Utilities, Transport and Household are needs; Dining, Shopping and Subscriptions are wants.
+- **Dashboard:** the "Budgets this month" panel follows the chosen style. Pace alerts apply wherever category limits exist.
+
+### Year in review (feature 7)
+- **`GET /analytics/year?year=YYYY`** (USD):
+  - income, expenses, net and savings rate
+  - income and expenses by month
+  - the top 5 categories with their share
+  - the 5 biggest purchases and the 5 most visited merchants
+  - the busiest month
+  - spending compared with the previous year
+  - how much each goal gained during the year
+  - net worth at the start and end of the year (from batch 1)
+- **New page `app/review/page.tsx`:** a "Year" link in `Shell.tsx`, arrows to change year, `CashflowChart` with monthly buckets, `CategoryDonut`, `RankedBars`, and sentences in the style of `MonthSummary`.
+
+### Tests
+- **Backend:**
+  - Pace projection: a fixed rent doesn't trigger an alert, a fast dining pace does, and nothing alerts before day 5.
+  - A goal repeat rule posts a linked transfer next month.
+  - Price change detection and "Keep".
+  - Each budget style's numbers.
+  - Year totals match the transaction list for a controlled year.
+- **Browser (8002):** every new control, plus phone width and dark mode.
+
+---
+
+## Batch 3: Sign-up and shared wallets (feature 9); detailed plan before building
+
+**Proposed shape:**
+- **Sign-up page:**
+  - A new `POST /auth/signup` (username, password of at least 8 characters). New accounts start with default categories and one Cash wallet, not mock data.
+  - The login page links to it.
+  - `CLAUDE.md` "Limitations" is updated, since logins are no longer hardcoded.
+- **Sharing a wallet:**
+  - A new `WalletMember` table (wallet, user). The wallet's owner shares it by username.
+  - Every query that filters by `user_id` changes to "wallets I own or am a member of". This is the risky part; it touches every router and gets its own tests.
+- **Shared wallet page:**
+  - A ledger where each member adds expenses marked "paid by".
+  - Each expense is split equally among the members.
+  - A "who owes whom" balance, and Settle up, which records a settlement.
+- **Personal analytics** count only your share of shared expenses.
+
+**Open questions to settle before batch 3:**
+- Categories are per user, so which categories do shared expenses use?
+- When you pay a shared expense with your own card, should the app also record it in that card wallet?
+
+---
+
+## Critical files
+- **Backend:**
+  - `backend/app/models.py`, `db.py`, `wallets.py`, a new `fx.py`, `recurring.py`
+  - `backend/app/routers/analytics.py`, `transactions.py`, `recurring.py`, `goals.py`, `wallets.py`, `export.py`, a new `fx.py`, a new `settings.py`
+  - `main.py`, to register the new routers
+- **Frontend:**
+  - `frontend/lib/format.ts`, `lib/api.ts`
+  - `app/page.tsx`, `wallets/page.tsx`, `transactions/page.tsx`, `budgets/page.tsx`, `goals/page.tsx`, `recurring/page.tsx`, a new `review/page.tsx`
+  - `components/TransactionModal.tsx`, `RecurringForm.tsx`, `charts.tsx`, `Shell.tsx`
+
+## Verification for each batch
+1. `cd backend && uv run pytest -q`: all tests pass.
+2. `npx tsc --noEmit` in `frontend`.
+3. Build `tracepai:<batch>-test`, run it on 8002 with its own volume, and run the Puppeteer flows (scripts in the scratchpad, reusing the earlier install). Take screenshots on desktop in light mode and at phone width in dark mode.
+4. Run the new image on a copy of the real database on 8003: the transaction count and wallet balances are unchanged, and the new columns exist.
+5. Back up `tracepai.db`, deploy to 8001 (or hand you the command), check the dashboard loads, and log everything in `docs/CHANGES.md`.
+
+## Status: batch 1 (2026-09-25)
+
+Batch 1 (multi-currency wallets and net worth) is built and tested:
+- 74 backend tests pass.
+- 14 browser checks pass in the test container on 8002.
+- The new version was run on a copy of the real database: its 6 transactions and every wallet balance are unchanged, and all its wallets became USD.
+
+Changes from the plan:
+- `/fx/convert` takes `source` and `to` (not `from`).
+- Wallets also return `in_use`, which the Wallets page uses to lock the currency field.
+- Goals return their `currency`, so goal amounts show in the goal wallet's currency.
+
+Batches 2 and 3 have not started.
+
+## Status: batch 2 (2026-09-25)
+
+Batch 2 (pace alerts, monthly goal transfers, price changes, budget styles, year in review) is built and tested:
+- 82 backend tests pass.
+- 28 browser checks pass in the test container on 8002.
+- The new version was run on a copy of the real database: its wallets, balances and 6 transactions are unchanged, and every new endpoint responds.
+
+Changes from the plan:
+- The category group column is `budget_group`, stored as an enum, because SQLModel can't store a `Literal`.
+- `GET /goals` now adds due recurring transactions first, like the other list endpoints, so a monthly goal transfer counts as soon as it's due.
+- The year review returns every category, not only the top 5, so the donut's shares are true.
+- Deleting a goal also stops its monthly transfers.
+
+Batch 3 (sign-up and shared wallets) has not started; its open questions are listed above.
+
+## Batch 3 as built: sign-up and shared wallets (2026-09-25)
+
+Decisions (my recommendations, which you accepted):
+- **Categories:** a shared wallet uses its owner's categories. In another member's own charts, a shared expense counts under their category with the same name, or "Shared".
+- **Paying with your own card:** the whole amount is recorded in the card wallet you paid from, so its balance stays right, and the expense is also added to the shared ledger.
+
+Design:
+- **A shared wallet is a ledger, not a place money sits.**
+  - New tables: `SharedWallet` (owner, name, currency), `SharedMember` and `Settlement`.
+  - A shared expense is an ordinary expense in the payer's own wallet, with `shared_wallet_id` set.
+- **Who shares an expense is fixed when it's added** (`Transaction.shared_members`), so people who join later don't share earlier expenses.
+- **Personal pages only ever read your own data.** Two exceptions:
+  - The shared wallet page, for its members.
+  - The spending view in analytics, which adds your share of what other members paid and cuts your own shared expenses to your share.
+- **Balances and net worth still use whole amounts,** because the whole payment left the payer's wallet.
+- **Settling up** records a `Settlement` in the ledger's currency. Each side can also record it in one of their own wallets; that transaction has `settlement_id` set, which moves the wallet's balance but is left out of spending and income.
+- **Member rules:**
+  - Only the owner adds or removes people.
+  - A member can leave, but only once settled up.
+  - A shared wallet can only be deleted while it has no expenses or payments.
+- **Sign-up** (`POST /api/auth/signup`):
+  - username of 3 to 32 letters, numbers, dots, dashes or underscores; password of at least 8 characters
+  - new accounts get the default categories and a Cash wallet
+  - the mock-data `user` account is unchanged
+
+## Status: batch 3 (2026-09-25)
+
+Built and tested:
+- 85 backend tests pass.
+- 26 two-person browser checks pass in the test container on 8002, and the batch 2 browser suite still passes.
+- On a copy of the real database, the wallets, balances, transactions and monthly spending are unchanged, and sign-up works.
+
+All three batches of the plan are now built.

@@ -5,6 +5,9 @@ import Shell from "@/components/Shell";
 import TransactionModal from "@/components/TransactionModal";
 import {
   BalanceChart,
+  Empty,
+  NetWorthChart,
+  NetWorthPoint,
   BalancePoint,
   BudgetBars,
   BudgetStatus,
@@ -19,7 +22,8 @@ import {
 } from "@/components/charts";
 import MonthSummary from "@/components/MonthSummary";
 import { GoalsPanel } from "@/components/goals";
-import { api, Category, Goal, Upcoming, Wallet } from "@/lib/api";
+import { api, BudgetPlan, BudgetStyle, Category, Goal, PriceChange, Upcoming, Wallet } from "@/lib/api";
+import { Alerts, GroupBars, ZeroBasedSummary } from "@/components/budgetViews";
 import { money, Period, periodRange, shortDate, slotColor } from "@/lib/format";
 
 type Merchants = {
@@ -29,6 +33,7 @@ type Merchants = {
 
 type Data = {
   balance: BalancePoint[];
+  networth: NetWorthPoint[];
   categories: CategoryTotal[];
   cashflow: CashflowPoint[];
   budgets: BudgetStatus[];
@@ -37,6 +42,9 @@ type Data = {
   wallets: Wallet[];
   upcoming: Upcoming[];
   goals: Goal[];
+  prices: PriceChange[];
+  plan: BudgetPlan;
+  style: BudgetStyle;
 };
 
 const PERIODS: { value: Period; label: string }[] = [
@@ -56,7 +64,7 @@ export default function Dashboard() {
   const load = useCallback(async () => {
     const scope = wallet ? `wallet=${wallet}` : "";
     const range = new URLSearchParams({ ...periodRange(period), ...(wallet && { wallet }) });
-    const [balance, cats, cashflow, budgets, merchants, comparison, categoryList, wallets, upcoming, goals] = await Promise.all([
+    const [balance, cats, cashflow, budgets, merchants, comparison, categoryList, wallets, upcoming, goals, networth, prices, plan, settings] = await Promise.all([
       api<BalancePoint[]>(`/analytics/balance?${scope}`),
       api<CategoryTotal[]>(`/analytics/categories?${range}`),
       api<CashflowPoint[]>(`/analytics/cashflow?${range}&bucket=${bucket}`),
@@ -67,8 +75,12 @@ export default function Dashboard() {
       api<Wallet[]>("/wallets"),
       api<Upcoming[]>("/recurring/upcoming?days=14"),
       api<Goal[]>("/goals"),
+      api<NetWorthPoint[]>("/analytics/networth"),
+      api<PriceChange[]>("/recurring/price-changes"),
+      api<BudgetPlan>("/analytics/budget-plan"),
+      api<{ budget_style: BudgetStyle }>("/settings"),
     ]);
-    setData({ balance, categories: cats, cashflow, budgets, merchants, comparison, wallets, upcoming, goals });
+    setData({ balance, categories: cats, cashflow, budgets, merchants, comparison, wallets, upcoming, goals, networth, prices, plan, style: settings.budget_style });
     setCategories(categoryList);
   }, [period, bucket, wallet]);
 
@@ -97,10 +109,11 @@ export default function Dashboard() {
     >
       {data && (
         <div className="space-y-4">
+          <Alerts budgets={data.budgets} prices={data.prices} wallets={data.wallets} />
           <section className="rounded-2xl bg-panel p-5 sm:p-7">
             <div className="flex flex-wrap items-end justify-between gap-6">
               <div>
-                <p className="text-sm text-ink-2">{selected ? `In ${selected.name}` : "Money on hand"}</p>
+                <p className="text-sm text-ink-2">{selected ? `In ${selected.name}${selected.currency !== "USD" ? ", in USD" : ""}` : "Money on hand"}</p>
                 <p className="font-display text-5xl font-bold tracking-tight tnum sm:text-7xl">{money(current)}</p>
               </div>
               <dl className="flex flex-wrap gap-x-8 gap-y-2 text-sm">
@@ -125,7 +138,10 @@ export default function Dashboard() {
               <BalanceChart data={data.balance} />
             </div>
             <div role="radiogroup" aria-label="Wallet" className="mt-5 flex flex-wrap gap-2">
-              {[{ id: "", name: "All wallets", color_slot: null, balance: data.wallets.reduce((s, w) => s + w.balance, 0) }, ...data.wallets].map(
+              {[
+                { id: "", name: "All wallets", color_slot: null, balance: data.wallets.reduce((s, w) => s + w.balance_usd, 0), currency: "USD" },
+                ...data.wallets,
+              ].map(
                 (w) => {
                   const active = String(w.id) === wallet;
                   return (
@@ -141,7 +157,7 @@ export default function Dashboard() {
                       {w.color_slot && <span className="h-2.5 w-2.5 rounded-full" style={{ background: slotColor(w.color_slot) }} />}
                       <span>
                         <span className="block text-ink-2">{w.name}</span>
-                        <span className={`block font-semibold tnum ${w.balance < 0 ? "text-critical" : ""}`}>{money(w.balance)}</span>
+                        <span className={`block font-semibold tnum ${w.balance < 0 ? "text-critical" : ""}`}>{money(w.balance, w.currency)}</span>
                       </span>
                     </button>
                   );
@@ -149,6 +165,24 @@ export default function Dashboard() {
               )}
             </div>
           </section>
+
+          <Panel title="Net worth" note="All wallets, in USD">
+            {data.networth.length > 1 ? (
+              <>
+                <dl className="mb-4 flex flex-wrap gap-x-8 gap-y-2 text-sm">
+                  {(["net", "assets", "debts"] as const).map((key) => (
+                    <div key={key}>
+                      <dt className="text-ink-2">{{ net: "Net worth", assets: "Assets", debts: "Debts" }[key]}</dt>
+                      <dd className="font-display text-xl font-semibold tnum">{money(data.networth.at(-1)![key])}</dd>
+                    </div>
+                  ))}
+                </dl>
+                <NetWorthChart data={data.networth} />
+              </>
+            ) : (
+              <Empty>Net worth appears after your first month of transactions.</Empty>
+            )}
+          </Panel>
 
           <div className="grid gap-4 lg:grid-cols-2">
             <MonthSummary wallet={wallet} refresh={data} />
@@ -184,8 +218,22 @@ export default function Dashboard() {
             </Panel>
           </div>
 
-          <Panel title="Budgets this month" note={selected && "Across all wallets"}>
-            <BudgetBars rows={data.budgets} />
+          <Panel
+            title={data.style === "50_30_20" ? "50/30/20 this month" : "Budgets this month"}
+            note={selected && "Across all wallets"}
+          >
+            {data.style === "50_30_20" ? (
+              <GroupBars plan={data.plan} />
+            ) : (
+              <>
+                {data.style === "zero_based" && (
+                  <div className="mb-5">
+                    <ZeroBasedSummary plan={data.plan} />
+                  </div>
+                )}
+                <BudgetBars rows={data.budgets} />
+              </>
+            )}
           </Panel>
 
           <div className="grid gap-4 lg:grid-cols-2">
@@ -239,7 +287,7 @@ export default function Dashboard() {
                     </span>
                     <span className={`tnum ${u.kind === "income" ? "text-up" : ""}`}>
                       {u.kind === "income" ? "+" : u.kind === "expense" ? "\u2212" : ""}
-                      {money(u.amount)}
+                      {money(u.amount, data.wallets.find((w) => w.id === u.wallet_id)?.currency)}
                     </span>
                   </li>
                 ))}

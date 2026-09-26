@@ -6,10 +6,10 @@ from sqlmodel import Session
 
 from app.models import (
     Budget,
+    BudgetGroup,
     Category,
     CategoryKind,
     Goal,
-    GoalContribution,
     Kind,
     RecurringRule,
     Split,
@@ -50,23 +50,36 @@ PLACES = {
 SUBSCRIPTIONS = [("Netflix", 15.49, 5), ("Spotify", 11.99, 12), ("iCloud", 2.99, 20)]
 
 
+def default_categories(user_id: int) -> dict[str, Category]:
+    """The categories every account starts with, by name."""
+    categories = {
+        "Salary": Category(user_id=user_id, name="Salary", color_slot=6, kind=CategoryKind.income),
+        "Freelance": Category(user_id=user_id, name="Freelance", color_slot=1, kind=CategoryKind.income),
+    }
+    for name, (slot, *_) in EXPENSES.items():
+        group = BudgetGroup.want if name in ("Dining", "Shopping", "Subscriptions") else BudgetGroup.need
+        categories[name] = Category(user_id=user_id, name=name, color_slot=slot, budget_group=group)
+    return categories
+
+
+def start_account(session: Session, user: User):
+    """A new sign-up starts with the default categories and a Cash wallet, and no mock data."""
+    session.add_all([*default_categories(user.id).values(), Wallet(user_id=user.id, name="Cash", kind=WalletKind.cash, color_slot=4)])
+
+
 def seed(session: Session):
     rng = random.Random(42)
     user = User(username="user", password_hash=PasswordHash.recommended().hash("password"))
     session.add(user)
     session.flush()
 
-    checking = Wallet(user_id=user.id, name="Checking", kind=WalletKind.bank, color_slot=1, opening_balance=2500)
+    checking = Wallet(user_id=user.id, name="Checking", kind=WalletKind.bank, color_slot=1, opening_balance=6500)
     card = Wallet(user_id=user.id, name="Credit card", kind=WalletKind.card, color_slot=7, opening_balance=0)
     cash = Wallet(user_id=user.id, name="Cash", kind=WalletKind.cash, color_slot=4, opening_balance=100)
-    savings = Wallet(user_id=user.id, name="Savings", kind=WalletKind.savings, color_slot=3, opening_balance=5000)
-    salary = Category(user_id=user.id, name="Salary", color_slot=6, kind=CategoryKind.income)
-    freelance = Category(user_id=user.id, name="Freelance", color_slot=1, kind=CategoryKind.income)
-    session.add_all([checking, card, cash, savings, salary, freelance])
-    categories = {}
-    for name, (slot, *_) in EXPENSES.items():
-        categories[name] = Category(user_id=user.id, name=name, color_slot=slot)
-        session.add(categories[name])
+    savings = Wallet(user_id=user.id, name="Savings", kind=WalletKind.savings, color_slot=3, opening_balance=1000)
+    categories = default_categories(user.id)
+    salary, freelance = categories.pop("Salary"), categories.pop("Freelance")
+    session.add_all([checking, card, cash, savings, salary, freelance, *categories.values()])
     session.flush()
     for name, (_, limit, *_) in EXPENSES.items():
         session.add(Budget(user_id=user.id, category_id=categories[name].id, monthly_limit=limit))
@@ -150,14 +163,16 @@ def seed(session: Session):
 
     add(first + dt.timedelta(days=40), 1850, Kind.expense, "United Airlines", checking, categories["Shopping"], tags="vacation", notes="Flights to Lisbon")
     add(first + dt.timedelta(days=95), 1299, Kind.expense, "Apple Store", checking, categories["Shopping"], tags="workReimbursable", notes="Laptop")
-    trip = Goal(user_id=user.id, name="Lisbon trip", target_amount=2000, color_slot=2,
+    # Goal money is a transfer from Checking to Savings; the opening balances above make up for the $4,000 moved.
+    trip = Goal(user_id=user.id, name="Lisbon trip", target_amount=2000, color_slot=2, wallet_id=savings.id,
                 target_date=(today.replace(day=1) + dt.timedelta(days=190)).replace(day=1))
-    fund = Goal(user_id=user.id, name="Emergency fund", target_amount=10000, color_slot=3)
+    fund = Goal(user_id=user.id, name="Emergency fund", target_amount=10000, color_slot=3, wallet_id=savings.id)
     session.add_all([trip, fund])
     session.flush()
     for months_ago, amount in ((3, 300), (2, 300), (1, 400)):
-        session.add(GoalContribution(goal_id=trip.id, amount=amount, date=today - dt.timedelta(days=30 * months_ago), note="Monthly"))
-    session.add(GoalContribution(goal_id=fund.id, amount=2500, date=first, note="Starting amount"))
-    session.add(GoalContribution(goal_id=fund.id, amount=500, date=today - dt.timedelta(days=20), note="Bonus"))
+        add(today - dt.timedelta(days=30 * months_ago), amount, Kind.transfer, trip.name, checking,
+            to_wallet_id=savings.id, goal_id=trip.id, notes="Monthly")
+    add(first, 2500, Kind.transfer, fund.name, checking, to_wallet_id=savings.id, goal_id=fund.id, notes="Starting amount")
+    add(today - dt.timedelta(days=20), 500, Kind.transfer, fund.name, checking, to_wallet_id=savings.id, goal_id=fund.id, notes="Bonus")
     session.commit()
     post_due(session, user.id, today)

@@ -3,6 +3,7 @@
 import { useState } from "react";
 import { api, Category, Frequency, Kind, RecurringInput, RecurringRule, Wallet } from "@/lib/api";
 import { iso } from "@/lib/format";
+import ReceivedField from "@/components/ReceivedField";
 
 const KINDS: { value: Kind; label: string }[] = [
   { value: "expense", label: "Expense" },
@@ -29,6 +30,7 @@ export default function RecurringForm({
   const [merchant, setMerchant] = useState(initial?.merchant ?? "");
   const [walletId, setWalletId] = useState(initial ? String(initial.wallet_id) : "");
   const [toWalletId, setToWalletId] = useState(initial?.to_wallet_id ? String(initial.to_wallet_id) : "");
+  const [received, setReceived] = useState(initial?.to_amount ? String(initial.to_amount) : "");
   const [categoryId, setCategoryId] = useState(initial?.category_id ? String(initial.category_id) : "");
   const [frequency, setFrequency] = useState<Frequency>(initial?.frequency ?? "monthly");
   const [nextDate, setNextDate] = useState(initial?.next_date ?? iso(new Date()));
@@ -36,6 +38,9 @@ export default function RecurringForm({
   const isTransfer = kind === "transfer";
   const fromWallet = walletId || String(wallets[0]?.id ?? "");
   const startsNow = nextDate <= iso(new Date());
+  const currencyOf = (id: string) => wallets.find((w) => String(w.id) === id)?.currency;
+  const currency = currencyOf(fromWallet) ?? "USD";
+  const crossCurrency = isTransfer && !!toWalletId && currencyOf(toWalletId) !== currency;
 
   async function suggestCategory(name: string) {
     if (isTransfer || categoryId || !name.trim()) return;
@@ -56,6 +61,7 @@ export default function RecurringForm({
           merchant,
           wallet_id: Number(fromWallet),
           to_wallet_id: isTransfer ? Number(toWalletId) : null,
+          to_amount: crossCurrency ? Number(received) : null,
           category_id: !isTransfer && categoryId ? Number(categoryId) : null,
           frequency,
           next_date: nextDate,
@@ -65,6 +71,7 @@ export default function RecurringForm({
         setMerchant("");
         setCategoryId("");
         setToWalletId("");
+        setReceived("");
         setNextDate(iso(new Date()));
       }}
     >
@@ -97,7 +104,7 @@ export default function RecurringForm({
           />
         </label>
         <label className="text-sm font-medium">
-          Amount
+          Amount{currency !== "USD" && ` (${currency})`}
           <input
             className="field mt-1 tnum"
             type="number"
@@ -147,6 +154,17 @@ export default function RecurringForm({
                 ))}
             </select>
           </label>
+        )}
+        {crossCurrency && (
+          <ReceivedField
+            className="field mt-1"
+            amount={amount}
+            from={currency}
+            to={currencyOf(toWalletId)}
+            date={nextDate}
+            value={received}
+            onChange={setReceived}
+          />
         )}
         <label className="text-sm font-medium">
           Repeats

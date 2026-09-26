@@ -3,8 +3,15 @@
 import { useCallback, useEffect, useState } from "react";
 import Shell from "@/components/Shell";
 import { BudgetBars, BudgetStatus, Panel } from "@/components/charts";
-import { api, ApiError, Budget, Category, Kind } from "@/lib/api";
+import { GroupBars, ZeroBasedSummary } from "@/components/budgetViews";
+import { api, ApiError, Budget, BudgetGroup, BudgetPlan, BudgetStyle, Category, Kind } from "@/lib/api";
 import { slotColor } from "@/lib/format";
+
+const STYLES: { value: BudgetStyle; label: string; about: string }[] = [
+  { value: "limits", label: "Limits", about: "A monthly limit for each category you choose." },
+  { value: "zero_based", label: "Zero-based", about: "Assign all of this month's income to categories, until nothing is left." },
+  { value: "50_30_20", label: "50/30/20", about: "Half of income for needs, 30% for wants, 20% saved. Choose a group for each category." },
+];
 
 export default function BudgetsPage() {
   const [status, setStatus] = useState<BudgetStatus[]>([]);
@@ -14,14 +21,20 @@ export default function BudgetsPage() {
   const [newBudget, setNewBudget] = useState({ category_id: "", monthly_limit: "" });
   const [newCategory, setNewCategory] = useState({ name: "", kind: "expense" as Kind, color_slot: 1 });
   const [error, setError] = useState("");
+  const [style, setStyle] = useState<BudgetStyle | null>(null);
+  const [plan, setPlan] = useState<BudgetPlan | null>(null);
 
   const load = useCallback(async () => {
-    const [s, b, c] = await Promise.all([
+    const [s, b, c, p, settings] = await Promise.all([
       api<BudgetStatus[]>("/analytics/budgets"),
       api<Budget[]>("/budgets"),
       api<Category[]>("/categories"),
+      api<BudgetPlan>("/analytics/budget-plan"),
+      api<{ budget_style: BudgetStyle }>("/settings"),
     ]);
     setStatus(s);
+    setPlan(p);
+    setStyle(settings.budget_style);
     setBudgets(b);
     setCategories(c);
     setLimits(Object.fromEntries(b.map((x) => [x.id, String(x.monthly_limit)])));
@@ -53,9 +66,38 @@ export default function BudgetsPage() {
         </p>
       )}
       <div className="space-y-4">
-        <Panel title="This month">
-          <BudgetBars rows={status} />
-        </Panel>
+        {style && (
+          <div>
+            <div role="radiogroup" aria-label="Budget style" className="flex w-fit gap-1 rounded-full bg-panel p-1 text-sm font-medium">
+              {STYLES.map((s) => (
+                <button
+                  key={s.value}
+                  role="radio"
+                  aria-checked={style === s.value}
+                  onClick={() => run(() => api("/settings", { method: "PUT", json: { budget_style: s.value } }))}
+                  className={`rounded-full px-3.5 py-1.5 ${style === s.value ? "bg-accent text-accent-ink" : "text-ink-2"}`}
+                >
+                  {s.label}
+                </button>
+              ))}
+            </div>
+            <p className="mt-2 text-sm text-ink-2">{STYLES.find((s) => s.value === style)?.about}</p>
+          </div>
+        )}
+        {plan && style === "50_30_20" ? (
+          <Panel title="This month">
+            <GroupBars plan={plan} />
+          </Panel>
+        ) : (
+          <Panel title="This month">
+            {plan && style === "zero_based" && (
+              <div className="mb-5">
+                <ZeroBasedSummary plan={plan} />
+              </div>
+            )}
+            <BudgetBars rows={status} />
+          </Panel>
+        )}
 
         <div className="grid gap-4 lg:grid-cols-2">
           <Panel title="Monthly limits">
@@ -154,6 +196,26 @@ export default function BudgetsPage() {
                   <span className="h-2.5 w-2.5 rounded-sm" style={{ background: slotColor(c.color_slot) }} />
                   {c.name}
                   <span className="text-xs text-ink-2">{c.kind === "income" ? "income" : ""}</span>
+                  {style === "50_30_20" && c.kind === "expense" && (
+                    <select
+                      className="rounded-full bg-panel px-1.5 py-0.5 text-xs"
+                      aria-label={`${c.name} group`}
+                      value={c.budget_group ?? ""}
+                      onChange={(e) =>
+                        run(() =>
+                          api(`/categories/${c.id}`, {
+                            method: "PUT",
+                            json: { ...c, budget_group: (e.target.value || null) as BudgetGroup | null },
+                          }),
+                        )
+                      }
+                    >
+                      <option value="">No group</option>
+                      <option value="need">Need</option>
+                      <option value="want">Want</option>
+                      <option value="savings">Savings</option>
+                    </select>
+                  )}
                   <button
                     aria-label={`Delete ${c.name}`}
                     className="rounded-full px-2 text-ink-2 hover:text-critical"

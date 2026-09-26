@@ -1,10 +1,11 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import { api, ApiError, Category, Frequency, Kind, ReceiptScan, Transaction, TransactionInput, Wallet } from "@/lib/api";
-import { iso, money } from "@/lib/format";
+import { api, ApiError, Category, Frequency, Kind, ReceiptScan, SharedWallet, Transaction, equalShares, parseShares, TransactionInput, Wallet } from "@/lib/api";
+import { currencySymbol, iso, money } from "@/lib/format";
 import { useElapsed } from "@/lib/useElapsed";
 import LocationField, { Location } from "@/components/LocationField";
+import ReceivedField from "@/components/ReceivedField";
 
 const KINDS: { value: Kind; label: string }[] = [
   { value: "expense", label: "Expense" },
@@ -18,12 +19,14 @@ export default function TransactionModal({
   categories,
   wallets,
   initial,
+  sharedWalletId,
   onClose,
   onSaved,
 }: {
   categories: Category[];
   wallets: Wallet[];
   initial?: Transaction;
+  sharedWalletId?: number; // a new expense starts shared in this wallet
   onClose: () => void;
   onSaved: () => void;
 }) {
@@ -32,6 +35,7 @@ export default function TransactionModal({
   const [categoryId, setCategoryId] = useState(initial?.category_id ? String(initial.category_id) : "");
   const [walletId, setWalletId] = useState(String(initial?.wallet_id ?? wallets[0]?.id ?? ""));
   const [toWalletId, setToWalletId] = useState(initial?.to_wallet_id ? String(initial.to_wallet_id) : "");
+  const [received, setReceived] = useState(initial?.to_amount ? String(initial.to_amount) : "");
   const [repeat, setRepeat] = useState<Frequency | "">("");
   const [hint, setHint] = useState("");
   const [location, setLocation] = useState<Location | null>(
@@ -63,11 +67,34 @@ export default function TransactionModal({
     return () => window.removeEventListener("keydown", onKey);
   }, [onClose]);
 
-  const options = categories.filter((c) => c.kind === kind);
+  const [ledgers, setLedgers] = useState<SharedWallet[]>([]);
+  const [sharedId, setSharedId] = useState(String(initial?.shared_wallet_id ?? sharedWalletId ?? ""));
+  const ledger = ledgers.find((l) => String(l.id) === sharedId);
+  // Percent per member for a shared expense; an edited expense starts from its saved split.
+  const [percents, setPercents] = useState<Record<number, string>>(() =>
+    Object.fromEntries(Object.entries(parseShares(initial?.shared_members ?? null)).map(([id, p]) => [id, String(p)])),
+  );
+  const splitEqually = (l: SharedWallet) =>
+    setPercents(Object.fromEntries(Object.entries(equalShares(l.members.map((m) => m.id))).map(([id, p]) => [id, String(p)])));
+  useEffect(() => {
+    if (ledger && Object.keys(percents).length === 0) splitEqually(ledger);
+  }, [ledger, percents]);
+  const percentTotal = Object.values(percents).reduce((sum, p) => sum + (Number(p) || 0), 0);
+  const shareMismatch = kind === "expense" && !!ledger && Math.abs(percentTotal - 100) > 0.01;
+
+  useEffect(() => {
+    api<SharedWallet[]>("/shared").then(setLedgers);
+  }, []);
+
+  // A shared expense uses the shared wallet owner's categories.
+  const options = (kind === "expense" && ledger ? ledger.categories : categories).filter((c) => c.kind === kind);
   const isTransfer = kind === "transfer";
+  const currencyOf = (id: string) => wallets.find((w) => String(w.id) === id)?.currency;
+  const currency = currencyOf(walletId) ?? "USD";
+  const crossCurrency = isTransfer && !!toWalletId && currencyOf(toWalletId) !== currency;
 
   async function suggestCategory(name: string, forKind: Kind = kind, current = categoryId) {
-    if (forKind === "transfer" || current || splits.length || !name.trim()) return;
+    if (forKind === "transfer" || current || splits.length || sharedId || !name.trim()) return;
     const params = new URLSearchParams({ merchant: name, kind: forKind });
     const suggestion = await api<{ category_id: number; source: string } | null>(`/categories/suggest?${params}`);
     if (suggestion) {
@@ -130,6 +157,7 @@ export default function TransactionModal({
       merchant,
       wallet_id: Number(walletId),
       to_wallet_id: isTransfer ? Number(toWalletId) : null,
+      to_amount: crossCurrency ? Number(received) : null,
       category_id: isTransfer || splits.length ? null : categoryId ? Number(categoryId) : null,
       notes,
       tags: tags
@@ -143,6 +171,9 @@ export default function TransactionModal({
       lng: isTransfer ? null : (location?.lng ?? null),
       splits: isTransfer ? [] : splits.map((s) => ({ category_id: Number(s.category_id), amount: Number(s.amount) })),
       repeat: repeat || null,
+      goal_id: initial?.goal_id ?? null,
+      shared_wallet_id: kind === "expense" && sharedId ? Number(sharedId) : null,
+      shares: kind === "expense" && ledger ? Object.fromEntries(Object.entries(percents).map(([id, p]) => [id, Number(p) || 0])) : null,
     };
     try {
       await api(initial ? `/transactions/${initial.id}` : "/transactions", {
@@ -195,9 +226,9 @@ export default function TransactionModal({
         </div>
 
         <label className="block text-sm font-medium">
-          Amount
+          Amount{currency !== "USD" && ` (${currency})`}
           <div className="mt-1.5 flex items-center gap-2 border-b-2 border-accent pb-1">
-            <span className="font-display text-3xl text-ink-2">$</span>
+            <span className="font-display text-3xl text-ink-2">{currencySymbol(currency)}</span>
             <input
               className="w-full bg-transparent font-display text-4xl font-semibold tnum outline-none"
               inputMode="decimal"
@@ -259,6 +290,75 @@ export default function TransactionModal({
               ))}
             </select>
           </label>
+          {crossCurrency && (
+            <div className="col-span-2">
+              <ReceivedField amount={amount} from={currency} to={currencyOf(toWalletId)} date={date} value={received} onChange={setReceived} />
+            </div>
+          )}
+          {kind === "expense" && ledgers.length > 0 && (
+            <label className="col-span-2 block text-sm font-medium">
+              Shared in
+              <select
+                className="field mt-1.5"
+                value={sharedId}
+                onChange={(e) => {
+                  setSharedId(e.target.value);
+                  setCategoryId("");
+                  setSplits([]);
+                  setPercents({});
+                }}
+              >
+                <option value="">Not shared</option>
+                {ledgers.map((l) => (
+                  <option key={l.id} value={l.id}>
+                    {l.name}
+                  </option>
+                ))}
+              </select>
+              {ledger && (
+                <span className="mt-1 block text-xs font-normal text-ink-2">
+                  The whole amount comes out of your wallet; only your share counts as your spending.
+                </span>
+              )}
+            </label>
+          )}
+          {kind === "expense" && ledger && (
+            <fieldset className="col-span-2 rounded-xl border border-line p-3 text-sm">
+              <legend className="px-1 font-medium">Share of each person</legend>
+              <ul className="space-y-2">
+                {ledger.members.map((m) => (
+                  <li key={m.id} className="flex items-center gap-2">
+                    <span className="mr-auto">{m.username}</span>
+                    <span className="text-ink-2 tnum">{money(((Number(amount) || 0) * (Number(percents[m.id]) || 0)) / 100, currency)}</span>
+                    <label className="flex items-center gap-1">
+                      <input
+                        className="field w-20 py-1 text-right tnum"
+                        type="number"
+                        inputMode="decimal"
+                        min="0"
+                        max="100"
+                        step="0.01"
+                        aria-label={`${m.username}'s share in percent`}
+                        value={percents[m.id] ?? ""}
+                        onChange={(e) => setPercents({ ...percents, [m.id]: e.target.value })}
+                      />
+                      <span className="text-ink-2">%</span>
+                    </label>
+                  </li>
+                ))}
+              </ul>
+              <div className="mt-2 flex items-center gap-3 text-xs">
+                <span className={shareMismatch ? "text-critical" : "text-ink-2"} aria-live="polite">
+                  {shareMismatch
+                    ? `${Math.round(percentTotal * 100) / 100}% so far; ${Math.abs(Math.round((100 - percentTotal) * 100) / 100)}% ${percentTotal > 100 ? "too much" : "left"}`
+                    : "Adds up to 100%"}
+                </span>
+                <button type="button" className="ml-auto text-accent" onClick={() => splitEqually(ledger)}>
+                  Split equally
+                </button>
+              </div>
+            </fieldset>
+          )}
           {hint && <p className="col-span-2 -mt-1 text-xs text-ink-2">{hint}</p>}
           <label className="block text-sm font-medium">
             Date
@@ -423,7 +523,7 @@ export default function TransactionModal({
                 </button>
                 {splitMismatch && (
                   <p className="mt-1 text-sm text-critical">
-                    Splits add up to {money(splitTotal)}. They need to match the amount, {money(Number(amount) || 0)}.
+                    Splits add up to {money(splitTotal, currency)}. They need to match the amount, {money(Number(amount) || 0, currency)}.
                   </p>
                 )}
               </fieldset>
@@ -436,7 +536,7 @@ export default function TransactionModal({
             {error}
           </p>
         )}
-        <button className="btn btn-primary mt-6 w-full py-2.5" disabled={busy || splitMismatch}>
+        <button className="btn btn-primary mt-6 w-full py-2.5" disabled={busy || splitMismatch || shareMismatch}>
           {initial ? "Save changes" : "Add transaction"}
         </button>
       </form>
