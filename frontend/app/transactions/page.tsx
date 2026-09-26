@@ -396,7 +396,6 @@ function Transactions({ wallet }: { wallet: string }) {
       {importing && (
         <ImportDialog
           wallets={wallets}
-          categories={categories}
           onClose={() => setImporting(false)}
           onImported={load}
         />

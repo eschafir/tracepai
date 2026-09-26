@@ -8,6 +8,7 @@ dependencies = [
     "pillow>=12.3.0",
     "pwdlib[argon2]>=0.3.1",
     "pypdfium2>=5.13.0",
+    "pytesseract>=0.3.13",
     "python-multipart>=0.0.32",
     "sqlmodel>=0.0.47",
     "uvicorn[standard]>=0.53.0",
@@ -21,5 +22,5 @@ dev = [
 
 [tool.pytest.ini_options]
 pythonpath = ["."]
-addopts = "-m 'not model'"
-markers = ["model: runs the real vision model through Ollama (slow; run with -m model)"]
+addopts = "-m 'not ocr'"
+markers = ["ocr: runs the real Tesseract (needs it installed; run with -m ocr)"]

@@ -1,5 +1,41 @@
 # Changes
 
+## 2026-09-26 10:12 EDT - Modification
+
+Receipts are read with Tesseract OCR again instead of the qwen3-vl vision model through Ollama. The model was slow on the Mac and tied deployments to a machine that can run it.
+
+- **What reads receipts:**
+  - **How:** Tesseract, in English and Spanish, installed in the Docker image (`tesseract-ocr`, `-eng`, `-spa`). Nothing to set up on the host, and the Ollama app and model are no longer needed.
+  - **Speed:** a scan takes about 0.3 seconds.
+- **What it reads:**
+  - Receipts, tickets and invoices, as photos, images or PDFs (every page is read). They pre-fill the amount, date and merchant in Add transaction, and the file is kept as the attachment.
+  - The photo's GPS location still fills the place.
+  - When no total is found, the form says so, as before.
+- **The rules** (`backend/app/ocr.py`, brought back from the first version):
+  - **Merchant:** the first line with letters, skipping titles like "Invoice", "Factura", "Ticket" or "Receipt".
+  - **Date:** YYYY-MM-DD or DD/MM/YYYY, swapping day and month when the month would be over 12.
+  - **Amount:** the last line with total, importe, monto, a pagar or amount (not a subtotal). Otherwise, the largest amount.
+  - **Amount formats:** both 1,234.56 and 1.234,56.
+- **Before reading:** images are turned to gray, their contrast is stretched, and small ones are enlarged.
+- **Removed:**
+  - `backend/app/vision.py` and the model tests.
+  - Reading bank statements from photos or PDFs, meaning the `/import/document` endpoints and the Import review table. Statements are imported as CSV only, and Import turns other files away with "Export your statement as CSV".
+  - `TRACEPAI_OLLAMA_URL` and the Linux `--add-host` flag.
+  - `frontend/lib/useElapsed.ts`.
+- **Scan response:** `/api/receipts/scan` returns `merchant`, `date`, `amount`, `receipt_path`, `lat` and `lng`. A missing Tesseract gives a 503 with a clear message.
+- **Tests:**
+  - **Backend:** 78 fast tests pass, and new tests in `backend/tests/test_ocr.py` cover the rules, the scan endpoint and the missing-Tesseract error.
+  - **Real OCR:** `uv run pytest -m ocr` reads the generated receipt, phone photo, Spanish ticket and invoice PDF correctly. These 5 tests pass in a container with Tesseract, since it isn't installed on the Mac.
+  - **Browser:** on a separate test container:
+    - the receipt, invoice PDF and phone photo fill the form
+    - a picture without text says no total was found
+    - the attachment opens
+    - Import takes a CSV and turns away a PDF
+    - phone width in dark mode
+  - The earlier suites still pass.
+  - A copy of the live database starts unchanged, with no schema change.
+- **Docs:** README, CLAUDE.md (Receipt capture) and docs/PLAN.md are updated.
+
 ## 2026-09-26 08:56 EDT - Feature
 
 A single expense can be shared with other people directly, without a shared wallet, and each person's share is tracked until they pay it back.

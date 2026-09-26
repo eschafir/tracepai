@@ -278,6 +278,8 @@ Deviations from the plan:
 
 # TracepAI: Read receipts, invoices and bank statements with qwen3-vl (Ollama)
 
+**Superseded on 2026-09-26:** the vision model was too slow on the Mac and tied deployments to a machine that can run it. Receipts are read with Tesseract again (see the last section), and bank statements come in as CSV only.
+
 ## Context
 Today, receipt photos are read with Tesseract plus hand-written rules. That only finds one total, and bank statements can only come in as CSV. You want every document read by the local vision model `qwen3-vl:8b`, which you've downloaded with Ollama:
 - a photo taken in the app,
@@ -943,3 +945,14 @@ Built and tested:
 - On a copy of the real database, the wallets, balances, transactions and monthly spending are unchanged, and sign-up works.
 
 All three batches of the plan are now built.
+
+---
+
+# TracepAI: Receipts with Tesseract again
+
+## Context
+The Ollama vision model was slow on the Mac and would limit deployments. Decisions (2026-09-26): read receipts, tickets and invoices with Tesseract (English and Spanish); drop reading bank statements from photos or PDFs, so statements come in as CSV only.
+
+## Status
+Done. `app/ocr.py` OCRs each page from `documents.to_images` and applies the rules for merchant, date and total. `/receipts/scan` returns merchant, date, amount, the attachment and the photo location. `app/vision.py`, the document import endpoints and the Import review table are removed. The Docker image installs `tesseract-ocr` with the English and Spanish packs.
+

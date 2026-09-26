@@ -5,10 +5,8 @@ from collections import Counter
 from fastapi import APIRouter, Form, HTTPException, UploadFile
 from sqlmodel import Field, SQLModel, select
 
-from app import vision
 from app.auth import CurrentUser, DbSession
 from app.categorize import suggest_category
-from app.documents import to_images
 from app.importer import guess_date_format, guess_mapping, parse_amount, parse_date, read_csv
 from app.models import CategoryKind, Kind, Transaction, Wallet
 
@@ -138,40 +136,3 @@ def owned_wallet(db: DbSession, user: CurrentUser, wallet_id: int) -> Wallet:
     if not wallet or wallet.user_id != user.id:
         raise HTTPException(404, "Wallet not found")
     return wallet
-
-
-@router.post("/document/preview")
-def preview_document(file: UploadFile, db: DbSession, user: CurrentUser):
-    extraction = vision.read_pages(to_images(file.file.read()))
-    rows = []
-    for row in extraction.transactions:
-        suggestion = suggest_category(db, user.id, row.merchant, row.kind)
-        rows.append({**row.model_dump(), "category_id": suggestion["category_id"] if suggestion else None})
-    return {"document_type": extraction.document_type, "transactions": rows}
-
-
-class DocumentRow(SQLModel):
-    date: dt.date | None
-    merchant: str = ""
-    amount: float
-    kind: CategoryKind
-    category_id: int | None = None
-
-
-class DocumentImport(SQLModel):
-    wallet_id: int
-    transactions: list[DocumentRow]
-
-
-@router.post("/document")
-def import_document(data: DocumentImport, db: DbSession, user: CurrentUser):
-    wallet = owned_wallet(db, user, data.wallet_id)
-    rows, errors = [], []
-    for number, row in enumerate(data.transactions, start=1):
-        if row.date is None:
-            errors.append({"row": number, "message": "The date is missing"})
-        elif row.amount <= 0:
-            errors.append({"row": number, "message": "The amount must be more than zero"})
-        else:
-            rows.append(ImportRow(**row.model_dump(), suggest=False))
-    return save_rows(db, user.id, wallet.id, rows, errors)

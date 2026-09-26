@@ -199,10 +199,9 @@ def test_gps_from_photo():
 
 
 def test_scan_returns_photo_position(client, monkeypatch):
-    from app import vision
+    from app import ocr
 
-    monkeypatch.setattr(vision, "_chat", lambda body: {"message": {"content": json.dumps(
-        {"document_type": "receipt", "transactions": [{"date": "2026-09-21", "merchant": "Cafe", "amount": 4, "direction": "money_out"}]})}})
+    monkeypatch.setattr(ocr, "read_text", lambda pages: "Cafe\nTOTAL 4.00")
     scan = client.post("/api/receipts/scan", files={"file": ("p.jpg", jpeg_with_gps(37.7955, -122.3937), "image/jpeg")}).json()
     assert abs(scan["lat"] - 37.7955) < 1e-5 and abs(scan["lng"] + 122.3937) < 1e-5
 

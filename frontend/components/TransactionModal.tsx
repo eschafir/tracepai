@@ -18,7 +18,6 @@ import {
   Wallet,
 } from "@/lib/api";
 import { currencySymbol, iso, money } from "@/lib/format";
-import { useElapsed } from "@/lib/useElapsed";
 import LocationField, { Location } from "@/components/LocationField";
 import ReceivedField from "@/components/ReceivedField";
 import Switch from "@/components/Switch";
@@ -80,7 +79,6 @@ export default function TransactionModal({
   const cameraInput = useRef<HTMLInputElement>(null);
   const fileInput = useRef<HTMLInputElement>(null);
   const [scanning, setScanning] = useState(false);
-  const scanSeconds = useElapsed(scanning);
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => e.key === "Escape" && onClose();
@@ -186,11 +184,10 @@ export default function TransactionModal({
       setReceiptPath(scan.receipt_path);
       if (scan.amount) setAmount(String(scan.amount));
       if (scan.date) setDate(scan.date);
-      setKind(scan.kind);
       if (scan.merchant) {
         setMerchant(scan.merchant);
         setCategoryId("");
-        suggestCategory(scan.merchant, scan.kind, "");
+        suggestCategory(scan.merchant, "expense", "");
       }
       if (scan.lat != null && scan.lng != null) {
         const { lat, lng } = scan;
@@ -199,14 +196,7 @@ export default function TransactionModal({
         setLocationSource("Location from the photo");
         setShowDetails(true);
       }
-      const found = scan.amount
-        ? "Read. Check the details before saving."
-        : "Attached, but no total was found. Enter the amount yourself.";
-      setStatus(
-        scan.count > 1
-          ? `${found} This looks like a bank statement with ${scan.count} transactions. Use Import on the Transactions page to add them all.`
-          : found,
-      );
+      setStatus(scan.amount ? "Read. Check the details before saving." : "Attached, but no total was found. Enter the amount yourself.");
     } catch (err) {
       setError(err instanceof ApiError ? err.message : "The document could not be read. Try a sharper photo.");
     } finally {
@@ -520,7 +510,7 @@ export default function TransactionModal({
             {scanning && (
               <p role="status" className="mt-3 flex items-center gap-2 text-sm text-ink-2">
                 <span className="h-2 w-2 animate-pulse rounded-full bg-accent motion-reduce:animate-none" />
-                Reading with qwen3-vl, {scanSeconds}s
+                Reading the receipt
               </p>
             )}
             {receiptPath && (

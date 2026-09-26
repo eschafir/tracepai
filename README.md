@@ -15,13 +15,7 @@ Open http://localhost:8000 and log in with `user` / `password`. Set `PORT` to us
 
 Data is stored in the `tracepai-data` Docker volume. Mock data is created on first start.
 
-Receipts, invoices and bank statements are read by a local vision model through [Ollama](https://ollama.com). Keep the Ollama app running with the model downloaded:
-
-```sh
-ollama pull qwen3-vl:2b
-```
-
-On Linux, start Ollama with `OLLAMA_HOST=0.0.0.0` so the container can reach it. Set `TRACEPAI_VISION_MODEL` to use another model.
+Receipts, tickets and invoices (photos, images or PDFs) are read with Tesseract OCR inside the container, in English and Spanish. Bank statements are imported as CSV.
 
 To scan receipts from a phone, open `http://<your-computer-ip>:8000` on the same Wi-Fi.
 

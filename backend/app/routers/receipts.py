@@ -4,7 +4,7 @@ from pathlib import Path
 from fastapi import APIRouter, HTTPException, UploadFile
 from fastapi.responses import FileResponse
 
-from app import vision
+from app import ocr
 from app.auth import CurrentUser
 from app.db import RECEIPTS_DIR
 from app.documents import gps_from_image, is_pdf, to_images
@@ -15,22 +15,16 @@ router = APIRouter(prefix="/receipts", tags=["receipts"])
 @router.post("/scan")
 def scan(file: UploadFile, user: CurrentUser):
     content = file.file.read()
-    images = to_images(content)
+    pages = to_images(content)
     suffix = ".pdf" if is_pdf(content) else Path(file.filename or "").suffix.lower() or ".jpg"
     name = f"{uuid.uuid4().hex}{suffix}"
     (RECEIPTS_DIR / name).write_bytes(content)
-    extraction = vision.read_pages(images)
-    first = extraction.transactions[0] if extraction.transactions else None
+    found = ocr.parse_receipt(ocr.read_text(pages))
     position = None if is_pdf(content) else gps_from_image(content)
     return {
+        **found,
         "lat": position[0] if position else None,
         "lng": position[1] if position else None,
-        "document_type": extraction.document_type,
-        "count": len(extraction.transactions),
-        "merchant": first.merchant if first else "",
-        "date": first.date if first else None,
-        "amount": first.amount if first else None,
-        "kind": first.kind if first else "expense",
         "receipt_path": name,
     }
 
