@@ -148,11 +148,14 @@ def test_budget_plan_and_year(client):
 
 
 def test_settings(client):
-    assert client.get("/api/settings").json() == {"budget_style": "limits"}
-    assert client.put("/api/settings", json={"budget_style": "50_30_20"}).json() == {"budget_style": "50_30_20"}
-    assert client.get("/api/settings").json() == {"budget_style": "50_30_20"}
+    default = {"budget_style": "limits", "overview_layout": [], "year_layout": []}
+    assert client.get("/api/settings").json() == default
+    assert client.put("/api/settings", json={"budget_style": "50_30_20"}).json()["budget_style"] == "50_30_20"
+    assert client.put("/api/settings", json={"overview_layout": ["goals", "networth"]}).status_code == 200
+    assert client.get("/api/settings").json() == {**default, "budget_style": "50_30_20", "overview_layout": ["goals", "networth"]}
     assert client.put("/api/settings", json={"budget_style": "envelopes"}).status_code == 422
-    client.put("/api/settings", json={"budget_style": "limits"})
+    client.put("/api/settings", json={"budget_style": "limits", "overview_layout": []})
+    assert client.get("/api/settings").json() == default
 
 
 def test_old_users_get_limits_style(tmp_path, monkeypatch):

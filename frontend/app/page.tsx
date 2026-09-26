@@ -22,7 +22,8 @@ import {
 } from "@/components/charts";
 import MonthSummary from "@/components/MonthSummary";
 import { GoalsPanel } from "@/components/goals";
-import { api, BudgetPlan, BudgetStyle, Category, Goal, PriceChange, Upcoming, Wallet } from "@/lib/api";
+import SortablePanels from "@/components/SortablePanels";
+import { api, BudgetPlan, BudgetStyle, Category, Goal, PriceChange, Settings, Upcoming, Wallet } from "@/lib/api";
 import { Alerts, GroupBars, ZeroBasedSummary } from "@/components/budgetViews";
 import { money, Period, periodRange, shortDate, slotColor } from "@/lib/format";
 
@@ -59,6 +60,7 @@ export default function Dashboard() {
   const [categories, setCategories] = useState<Category[]>([]);
   const [wallet, setWallet] = useState("");
   const [adding, setAdding] = useState(false);
+  const [layout, setLayout] = useState<string[]>([]);
   const bucket = period === "year" ? "month" : "day";
 
   const load = useCallback(async () => {
@@ -78,10 +80,11 @@ export default function Dashboard() {
       api<NetWorthPoint[]>("/analytics/networth"),
       api<PriceChange[]>("/recurring/price-changes"),
       api<BudgetPlan>("/analytics/budget-plan"),
-      api<{ budget_style: BudgetStyle }>("/settings"),
+      api<Settings>("/settings"),
     ]);
     setData({ balance, categories: cats, cashflow, budgets, merchants, comparison, wallets, upcoming, goals, networth, prices, plan, style: settings.budget_style });
     setCategories(categoryList);
+    setLayout(settings.overview_layout);
   }, [period, bucket, wallet]);
 
   useEffect(() => {
@@ -166,36 +169,7 @@ export default function Dashboard() {
             </div>
           </section>
 
-          <Panel title="Net worth" note="All wallets, in USD">
-            {data.networth.length > 1 ? (
-              <>
-                <dl className="mb-4 flex flex-wrap gap-x-8 gap-y-2 text-sm">
-                  {(["net", "assets", "debts"] as const).map((key) => (
-                    <div key={key}>
-                      <dt className="text-ink-2">{{ net: "Net worth", assets: "Assets", debts: "Debts" }[key]}</dt>
-                      <dd className="font-display text-xl font-semibold tnum">{money(data.networth.at(-1)![key])}</dd>
-                    </div>
-                  ))}
-                </dl>
-                <NetWorthChart data={data.networth} />
-              </>
-            ) : (
-              <Empty>Net worth appears after your first month of transactions.</Empty>
-            )}
-          </Panel>
-
-          <div className="grid gap-4 lg:grid-cols-2">
-            <MonthSummary wallet={wallet} refresh={data} />
-            <Panel title="Goals" note={<a className="text-accent" href="/goals/">All goals</a>}>
-              <GoalsPanel goals={data.goals} />
-            </Panel>
-          </div>
-
-          <div
-            role="radiogroup"
-            aria-label="Period"
-            className="flex w-fit gap-1 rounded-full bg-panel p-1 text-sm font-medium"
-          >
+          <div role="radiogroup" aria-label="Period" className="flex w-fit gap-1 rounded-full bg-panel p-1 text-sm font-medium">
             {PERIODS.map((p) => (
               <button
                 key={p.value}
@@ -209,92 +183,155 @@ export default function Dashboard() {
             ))}
           </div>
 
-          <div className="grid gap-4 lg:grid-cols-2">
-            <Panel title="Where it went">
-              <CategoryDonut data={data.categories} />
-            </Panel>
-            <Panel title="In vs out" note={bucket === "day" ? "Per day" : "Per month"}>
-              <CashflowChart data={data.cashflow} bucket={bucket} />
-            </Panel>
-          </div>
-
-          <Panel
-            title={data.style === "50_30_20" ? "50/30/20 this month" : "Budgets this month"}
-            note={selected && "Across all wallets"}
-          >
-            {data.style === "50_30_20" ? (
-              <GroupBars plan={data.plan} />
-            ) : (
-              <>
-                {data.style === "zero_based" && (
-                  <div className="mb-5">
-                    <ZeroBasedSummary plan={data.plan} />
-                  </div>
-                )}
-                <BudgetBars rows={data.budgets} />
-              </>
-            )}
-          </Panel>
-
-          <div className="grid gap-4 lg:grid-cols-2">
-            <Panel title="Biggest expenses">
-              <RankedBars
-                rows={data.merchants.largest.map((t) => ({
-                  key: t.id,
-                  label: t.merchant || "Unknown",
-                  sub: shortDate(t.date),
-                  value: t.amount,
-                  display: money(t.amount),
-                }))}
-              />
-            </Panel>
-            <Panel title="Most visited">
-              <RankedBars
-                rows={data.merchants.frequent.map((m) => ({
-                  key: m.merchant,
-                  label: m.merchant || "Unknown",
-                  sub: money(m.total),
-                  value: m.count,
-                  display: `${m.count} ${m.count === 1 ? "visit" : "visits"}`,
-                }))}
-              />
-            </Panel>
-          </div>
-
-          <div className="grid gap-4 lg:grid-cols-[2fr_1fr]">
-          <Panel
-            title="Spending pace"
-            note={
-              paceDelta !== null &&
-              `${money(Math.abs(paceDelta))} ${paceDelta > 0 ? "more" : "less"} than this point last month`
-            }
-          >
-            <ComparisonChart data={data.comparison} />
-          </Panel>
-          <Panel title="Coming up" note="Next 14 days">
-            {data.upcoming.length === 0 ? (
-              <p className="py-6 text-center text-sm text-ink-2">Nothing scheduled in the next two weeks.</p>
-            ) : (
-              <ul className="space-y-2.5 text-sm">
-                {data.upcoming.map((u) => (
-                  <li key={`${u.rule_id}-${u.date}`} className="flex items-baseline gap-3">
-                    <span className="w-12 shrink-0 text-ink-2 tnum">{shortDate(u.date)}</span>
-                    <span className="mr-auto min-w-0">
-                      <span className="block truncate">{u.merchant}</span>
-                      <span className="block text-xs text-ink-2">
-                        {u.kind === "transfer" ? `${walletName(u.wallet_id)} to ${walletName(u.to_wallet_id)}` : walletName(u.wallet_id)}
-                      </span>
-                    </span>
-                    <span className={`tnum ${u.kind === "income" ? "text-up" : ""}`}>
-                      {u.kind === "income" ? "+" : u.kind === "expense" ? "\u2212" : ""}
-                      {money(u.amount, data.wallets.find((w) => w.id === u.wallet_id)?.currency)}
-                    </span>
-                  </li>
-                ))}
-              </ul>
-            )}
-          </Panel>
-          </div>
+          <SortablePanels
+            order={layout}
+            onChange={(order) => {
+              setLayout(order);
+              api("/settings", { method: "PUT", json: { overview_layout: order } });
+            }}
+            items={[
+              {
+                id: "networth",
+                wide: true,
+                node: (
+                  <Panel title="Net worth" note="All wallets, in USD">
+                    {data.networth.length > 1 ? (
+                      <>
+                        <dl className="mb-4 flex flex-wrap gap-x-8 gap-y-2 text-sm">
+                          {(["net", "assets", "debts"] as const).map((key) => (
+                            <div key={key}>
+                              <dt className="text-ink-2">{{ net: "Net worth", assets: "Assets", debts: "Debts" }[key]}</dt>
+                              <dd className="font-display text-xl font-semibold tnum">{money(data.networth.at(-1)![key])}</dd>
+                            </div>
+                          ))}
+                        </dl>
+                        <NetWorthChart data={data.networth} />
+                      </>
+                    ) : (
+                      <Empty>Net worth appears after your first month of transactions.</Empty>
+                    )}
+                  </Panel>
+                ),
+              },
+              { id: "month", node: <MonthSummary wallet={wallet} refresh={data} /> },
+              {
+                id: "goals",
+                node: (
+                  <Panel title="Goals" note={<a className="text-accent" href="/goals/">All goals</a>}>
+                    <GoalsPanel goals={data.goals} />
+                  </Panel>
+                ),
+              },
+              {
+                id: "categories",
+                node: (
+                  <Panel title="Where it went" note={PERIODS.find((p) => p.value === period)!.label}>
+                    <CategoryDonut data={data.categories} />
+                  </Panel>
+                ),
+              },
+              {
+                id: "cashflow",
+                node: (
+                  <Panel title="In vs out" note={bucket === "day" ? "Per day" : "Per month"}>
+                    <CashflowChart data={data.cashflow} bucket={bucket} />
+                  </Panel>
+                ),
+              },
+              {
+                id: "budgets",
+                wide: true,
+                node: (
+                  <Panel title={data.style === "50_30_20" ? "50/30/20 this month" : "Budgets this month"} note={selected && "Across all wallets"}>
+                    {data.style === "50_30_20" ? (
+                      <GroupBars plan={data.plan} />
+                    ) : (
+                      <>
+                        {data.style === "zero_based" && (
+                          <div className="mb-5">
+                            <ZeroBasedSummary plan={data.plan} />
+                          </div>
+                        )}
+                        <BudgetBars rows={data.budgets} />
+                      </>
+                    )}
+                  </Panel>
+                ),
+              },
+              {
+                id: "biggest",
+                node: (
+                  <Panel title="Biggest expenses">
+                    <RankedBars
+                      rows={data.merchants.largest.map((t) => ({
+                        key: t.id,
+                        label: t.merchant || "Unknown",
+                        sub: shortDate(t.date),
+                        value: t.amount,
+                        display: money(t.amount),
+                      }))}
+                    />
+                  </Panel>
+                ),
+              },
+              {
+                id: "visited",
+                node: (
+                  <Panel title="Most visited">
+                    <RankedBars
+                      rows={data.merchants.frequent.map((m) => ({
+                        key: m.merchant,
+                        label: m.merchant || "Unknown",
+                        sub: money(m.total),
+                        value: m.count,
+                        display: `${m.count} ${m.count === 1 ? "visit" : "visits"}`,
+                      }))}
+                    />
+                  </Panel>
+                ),
+              },
+              {
+                id: "pace",
+                wide: true,
+                node: (
+                  <Panel
+                    title="Spending pace"
+                    note={paceDelta !== null && `${money(Math.abs(paceDelta))} ${paceDelta > 0 ? "more" : "less"} than this point last month`}
+                  >
+                    <ComparisonChart data={data.comparison} />
+                  </Panel>
+                ),
+              },
+              {
+                id: "upcoming",
+                node: (
+                  <Panel title="Coming up" note="Next 14 days">
+                    {data.upcoming.length === 0 ? (
+                      <p className="py-6 text-center text-sm text-ink-2">Nothing scheduled in the next two weeks.</p>
+                    ) : (
+                      <ul className="space-y-2.5 text-sm">
+                        {data.upcoming.map((u) => (
+                          <li key={`${u.rule_id}-${u.date}`} className="flex items-baseline gap-3">
+                            <span className="w-12 shrink-0 text-ink-2 tnum">{shortDate(u.date)}</span>
+                            <span className="mr-auto min-w-0">
+                              <span className="block truncate">{u.merchant}</span>
+                              <span className="block text-xs text-ink-2">
+                                {u.kind === "transfer" ? `${walletName(u.wallet_id)} to ${walletName(u.to_wallet_id)}` : walletName(u.wallet_id)}
+                              </span>
+                            </span>
+                            <span className={`tnum ${u.kind === "income" ? "text-up" : ""}`}>
+                              {u.kind === "income" ? "+" : u.kind === "expense" ? "−" : ""}
+                              {money(u.amount, data.wallets.find((w) => w.id === u.wallet_id)?.currency)}
+                            </span>
+                          </li>
+                        ))}
+                      </ul>
+                    )}
+                  </Panel>
+                ),
+              },
+            ]}
+          />
         </div>
       )}
       {adding && (

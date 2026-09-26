@@ -1,5 +1,33 @@
 # Changes
 
+## 2026-09-25 21:25 EDT - Feature
+
+Panels on Overview and Year can be dragged into any order, and the order is saved to the account.
+
+- **What moves:** every chart panel. The top of each page stays fixed: on Overview the alerts, "Money on hand" with the wallet chips, and the period switch; on Year the title and the year summary.
+- **How:**
+  - Drag the grip before a panel's title, with the mouse or a finger. Dragging starts only from the grip, so links, buttons and chart tooltips inside panels work as before, and a finger can still scroll.
+  - With the grip focused, the arrow keys move the panel one place earlier or later. This replaced dnd-kit's own keyboard sensor, which picks targets by position and moved panels the wrong way when wide and half-width panels are mixed.
+  - Panel widths don't change. A half-width panel moved next to a wide one can leave a gap on large screens, which you can fill by dragging.
+  - "Where it went" on Overview now notes its period, since it can be moved away from the period switch.
+- **Saved:**
+  - Per account, so the order follows you to any browser.
+  - Panels added in future versions appear in their default place.
+- **Code:**
+  - Backend: `User.overview_layout` and `User.year_layout` (comma-separated panel ids) are added to existing databases on start-up. `GET /api/settings` returns them as lists. `PUT /api/settings` is now a partial update, applying only the fields sent.
+  - New `frontend/components/SortablePanels.tsx`, built on `@dnd-kit/core` and `@dnd-kit/sortable`. `Panel` in `frontend/components/charts.tsx` shows the grip through a `DragHandle` context when it's inside a sortable list. `frontend/app/page.tsx` and `frontend/app/review/page.tsx` pass their panels to it.
+- **Tests:**
+  - `test_settings` covers the new fields and partial updates. All 86 backend tests pass.
+  - A browser run on a separate test container covered:
+    - a mouse drag, then a reload
+    - the arrow keys, with focus staying on the grip
+    - the order saved per account, with another account keeping the default
+    - clicks inside panels still working
+    - Year dragging
+    - a touch drag at phone width in dark mode
+  - The earlier wallet and shared-wallet suites still pass.
+  - A copy of the live database starts with the new columns, and its wallets and transactions are unchanged.
+
 ## 2026-09-25 20:41 EDT - Feature
 
 One wallet form with a Shared switch, percentages per shared expense, editable shared expenses, and deletable shared wallets.

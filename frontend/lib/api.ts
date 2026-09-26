@@ -164,6 +164,8 @@ export type MonthSummary = {
 
 export type BudgetStyle = "limits" | "zero_based" | "50_30_20";
 
+export type Settings = { budget_style: BudgetStyle; overview_layout: string[]; year_layout: string[] };
+
 export type BudgetPlan = {
   month: string;
   income: number;

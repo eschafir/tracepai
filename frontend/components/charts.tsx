@@ -15,6 +15,7 @@ import {
   XAxis,
   YAxis,
 } from "recharts";
+import { createContext, useContext } from "react";
 import { money, moneyShort, monthLabel, shortDate, slotColor } from "@/lib/format";
 
 const axis = { stroke: "var(--axis)", tick: { fill: "var(--muted)", fontSize: 12 }, tickLine: false };
@@ -31,6 +32,9 @@ const tooltip = {
   formatter: (value: unknown) => money(Number(value)),
 };
 
+/** Set by SortablePanels: the grip that drags the panel it's in. */
+export const DragHandle = createContext<((title: string) => React.ReactNode) | null>(null);
+
 export function Panel({
   title,
   note,
@@ -42,10 +46,14 @@ export function Panel({
   className?: string;
   children: React.ReactNode;
 }) {
+  const handle = useContext(DragHandle);
   return (
     <section className={`rounded-2xl bg-panel p-5 ${className}`}>
       <div className="mb-4 flex flex-wrap items-baseline justify-between gap-x-4 gap-y-1">
-        <h2 className="font-display text-lg font-semibold">{title}</h2>
+        <h2 className="flex items-center gap-2 font-display text-lg font-semibold">
+          {handle?.(title)}
+          {title}
+        </h2>
         {note && <p className="text-sm text-ink-2">{note}</p>}
       </div>
       {children}

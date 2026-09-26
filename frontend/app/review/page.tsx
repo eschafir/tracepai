@@ -3,7 +3,8 @@
 import { useEffect, useState } from "react";
 import Shell from "@/components/Shell";
 import { CashflowChart, CategoryDonut, Empty, Panel, RankedBars } from "@/components/charts";
-import { api, YearReview } from "@/lib/api";
+import SortablePanels from "@/components/SortablePanels";
+import { api, Settings, YearReview } from "@/lib/api";
 import { money, parseIso, shortDate } from "@/lib/format";
 
 const monthName = (period: string) => parseIso(`${period}-01`).toLocaleDateString("en-US", { month: "long" });
@@ -12,6 +13,11 @@ export default function ReviewPage() {
   const thisYear = new Date().getFullYear();
   const [year, setYear] = useState(thisYear);
   const [review, setReview] = useState<YearReview | null>(null);
+  const [layout, setLayout] = useState<string[]>([]);
+
+  useEffect(() => {
+    api<Settings>("/settings").then((s) => setLayout(s.year_layout));
+  }, []);
 
   useEffect(() => {
     api<YearReview>(`/analytics/year?year=${year}`).then(setReview);
@@ -90,42 +96,69 @@ export default function ReviewPage() {
             <p className="mt-4 text-xs text-ink-2">All amounts in USD, converted at each day&apos;s rate.</p>
           </section>
 
-          <Panel title="Month by month">
-            <CashflowChart data={r.months} bucket="month" />
-          </Panel>
-
-          <div className="grid gap-4 lg:grid-cols-2">
-            <Panel title="Where it went">
-              <CategoryDonut data={r.categories} />
-            </Panel>
-            <Panel title="Biggest purchases">
-              {r.largest.length ? (
-                <RankedBars
-                  rows={r.largest.map((t) => ({
-                    key: t.id,
-                    label: t.merchant || "No merchant",
-                    sub: shortDate(t.date),
-                    value: t.amount,
-                    display: money(t.amount),
-                  }))}
-                />
-              ) : (
-                <Empty>No purchases this year.</Empty>
-              )}
-            </Panel>
-          </div>
-
-          <Panel title="Most visited">
-            <RankedBars
-              rows={r.frequent.map((m) => ({
-                key: m.merchant,
-                label: m.merchant || "No merchant",
-                sub: `${m.count} times`,
-                value: m.count,
-                display: money(m.total),
-              }))}
-            />
-          </Panel>
+          <SortablePanels
+            order={layout}
+            onChange={(order) => {
+              setLayout(order);
+              api("/settings", { method: "PUT", json: { year_layout: order } });
+            }}
+            items={[
+              {
+                id: "months",
+                wide: true,
+                node: (
+                  <Panel title="Month by month">
+                    <CashflowChart data={r.months} bucket="month" />
+                  </Panel>
+                ),
+              },
+              {
+                id: "categories",
+                node: (
+                  <Panel title="Where it went">
+                    <CategoryDonut data={r.categories} />
+                  </Panel>
+                ),
+              },
+              {
+                id: "largest",
+                node: (
+                  <Panel title="Biggest purchases">
+                    {r.largest.length ? (
+                      <RankedBars
+                        rows={r.largest.map((t) => ({
+                          key: t.id,
+                          label: t.merchant || "No merchant",
+                          sub: shortDate(t.date),
+                          value: t.amount,
+                          display: money(t.amount),
+                        }))}
+                      />
+                    ) : (
+                      <Empty>No purchases this year.</Empty>
+                    )}
+                  </Panel>
+                ),
+              },
+              {
+                id: "frequent",
+                wide: true,
+                node: (
+                  <Panel title="Most visited">
+                    <RankedBars
+                      rows={r.frequent.map((m) => ({
+                        key: m.merchant,
+                        label: m.merchant || "No merchant",
+                        sub: `${m.count} times`,
+                        value: m.count,
+                        display: money(m.total),
+                      }))}
+                    />
+                  </Panel>
+                ),
+              },
+            ]}
+          />
         </div>
       )}
     </Shell>
