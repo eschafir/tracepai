@@ -1,5 +1,18 @@
 # Changes
 
+## 2026-09-27 10:26 EDT - Review
+
+Full code review of the repository, written to `docs/code_review.md`. No application code was changed.
+
+- **Findings:** 5 high, 10 medium and 11 low, each with its location, the problem and an action. The high ones:
+  - stored XSS through receipt uploads
+  - receipts readable by any signed-in user
+  - missing ownership checks on wallet and category ids
+  - unvalidated profile import
+  - the published mock-account password on cloud deployments
+- **Evidence:** 5 of the findings were reproduced with a TestClient script against a temporary database, and the report marks them as Confirmed. The existing 92 backend tests pass and the frontend type-checks.
+- **Action plan:** a prioritized table of 14 actions at the end of the report.
+
 ## 2026-09-27 09:58 EDT - Feature
 
 User menu dropdown with Profile settings, nested Export and Import options, and simplified toolbar.
