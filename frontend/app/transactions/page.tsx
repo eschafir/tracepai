@@ -6,7 +6,6 @@ import { useSearchParams } from "next/navigation";
 import Shell from "@/components/Shell";
 import { PinIcon } from "@/components/LocationField";
 import Toast from "@/components/Toast";
-import ImportDialog from "@/components/ImportDialog";
 import ReceiptViewer, { ReceiptButton } from "@/components/ReceiptViewer";
 import ShareStatus from "@/components/ShareStatus";
 import TransactionModal from "@/components/TransactionModal";
@@ -45,7 +44,6 @@ function Transactions({ wallet }: { wallet: string }) {
     tag: "",
     wallet,
   }));
-  const [importing, setImporting] = useState(false);
   const [viewing, setViewing] = useState<Transaction | null>(null);
   const [editing, setEditing] = useState<Transaction | "new" | null>(null);
   const [view, setView] = useState<"list" | "map">("list");
@@ -168,15 +166,6 @@ function Transactions({ wallet }: { wallet: string }) {
     >
       <div className="mb-4 flex flex-wrap items-end gap-3">
         <h1 className="mr-auto w-full font-display sm:w-auto text-3xl font-bold tracking-tight">Transactions</h1>
-        <button className="btn" onClick={() => setImporting(true)}>
-          Import
-        </button>
-        <a className="btn" href="/api/export?format=csv">
-          Export CSV
-        </a>
-        <a className="btn" href="/api/export?format=json">
-          Export JSON
-        </a>
       </div>
 
       <div className="mb-4 grid grid-cols-2 gap-3 rounded-2xl bg-panel p-4 sm:grid-cols-3 lg:grid-cols-6">
@@ -391,13 +380,6 @@ function Transactions({ wallet }: { wallet: string }) {
           path={viewing.receipt_path}
           title={`${viewing.merchant || "Receipt"}, ${shortDate(viewing.date)}`}
           onClose={() => setViewing(null)}
-        />
-      )}
-      {importing && (
-        <ImportDialog
-          wallets={wallets}
-          onClose={() => setImporting(false)}
-          onImported={load}
         />
       )}
     </Shell>

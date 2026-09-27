@@ -46,6 +46,7 @@ class User(SQLModel, table=True):
     id: int | None = Field(default=None, primary_key=True)
     username: str = Field(unique=True, index=True)
     password_hash: str
+    display_name: str = ""
     budget_style: str = "limits"  # limits, zero_based or 50_30_20
     overview_layout: str = ""  # panel ids in the order the user arranged them, comma-separated
     year_layout: str = ""

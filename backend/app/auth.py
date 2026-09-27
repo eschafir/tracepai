@@ -91,9 +91,38 @@ def logout(
     return {"ok": True}
 
 
+class ProfileUpdate(SQLModel):
+    display_name: str | None = None
+    password: str | None = None
+    current_password: str | None = None
+
+
 @router.get("/me")
 def me(user: CurrentUser):
-    return {"id": user.id, "username": user.username}
+    return {
+        "id": user.id,
+        "username": user.username,
+        "display_name": getattr(user, "display_name", "") or user.username,
+    }
+
+
+@router.put("/profile")
+def update_profile(data: ProfileUpdate, db: DbSession, user: CurrentUser):
+    if data.password:
+        if not data.current_password or not password_hash.verify(data.current_password, user.password_hash):
+            raise HTTPException(400, "Current password is incorrect.")
+        if len(data.password) < 8:
+            raise HTTPException(400, "New password must be at least 8 characters.")
+        user.password_hash = password_hash.hash(data.password)
+    if data.display_name is not None:
+        user.display_name = data.display_name.strip()
+    db.add(user)
+    db.commit()
+    return {
+        "id": user.id,
+        "username": user.username,
+        "display_name": getattr(user, "display_name", "") or user.username,
+    }
 
 
 @router.get("/users/{username}")

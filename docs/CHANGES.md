@@ -1,5 +1,40 @@
 # Changes
 
+## 2026-09-27 09:58 EDT - Feature
+
+User menu dropdown with Profile settings, nested Export and Import options, and simplified toolbar.
+
+- **User Profile Management:**
+  - Added `display_name` to `User` model.
+  - Added `PUT /api/auth/profile` allowing users to update their display name and change password (verifying current password and minimum 8 characters).
+  - Updated `/api/auth/me` to include `display_name`.
+- **Navigation & User Dropdown:**
+  - In `frontend/components/Shell.tsx`, the user's name is now a clickable dropdown button.
+  - Dropdown options:
+    - **Profile**: Opens `ProfileModal` to edit display name and password.
+    - **Export**: Expands two options: **CSV** (direct bank transactions export) and **Profile** (full backup).
+    - **Import**: Expands two options: **CSV** (opens bank statement import) and **Profile** (opens profile restore dialog).
+    - **Log out**: Logs out the user.
+- **Transactions Page Cleanup:**
+  - Removed cluttered import and export buttons from `frontend/app/transactions/page.tsx`, keeping the action bar clean and focused.
+- **Tests:**
+  - Added profile update tests in `backend/tests/test_dual_auth.py`. All 92 backend tests pass.
+
+## 2026-09-27 09:45 EDT - Feature
+
+Full Account Profile Export and Import (Backup & Restore).
+
+- **Export Profile:**
+  - Added `GET /api/export/profile` generating a complete JSON backup containing user layout preferences, wallets, categories, budgets, goals, recurring rules, transactions, and split breakdowns.
+- **Import Profile:**
+  - Added `POST /api/import/profile` supporting both `replace` (clean 1:1 replica) and `merge` modes.
+  - Automatically remaps internal foreign keys (`wallet_id`, `category_id`, `goal_id`, `recurring_id`) to ensure atomic and relational integrity on restore.
+- **Frontend UI:**
+  - Added "Export Profile" link and "Import Profile" button to the Transactions page action toolbar.
+  - Created `ProfileImportModal` component with file preview and restore mode options.
+- **Tests:**
+  - Added `backend/tests/test_profile_export_import.py` covering profile structure, full clone with replace mode, merge mode, and invalid file validation. All 91 backend tests pass.
+
 ## 2026-09-27 08:33 EDT - Feature
 
 Cloud database (Supabase PostgreSQL), cloud object storage (Supabase Storage), and mobile-ready dual authentication for deployment to Render.

@@ -66,6 +66,18 @@ export type ImportPreview = { headers: string[]; rows: string[][]; row_count: nu
 
 export type ImportResult = { imported: number; duplicates: number; errors: { row: number; message: string }[] };
 
+export type ProfileImportResult = {
+  ok: boolean;
+  imported: {
+    wallets: number;
+    categories: number;
+    budgets: number;
+    goals: number;
+    recurring_rules: number;
+    transactions: number;
+  };
+};
+
 export type Budget = { id: number; category_id: number; monthly_limit: number };
 
 export type ReceiptScan = {

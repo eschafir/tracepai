@@ -53,3 +53,31 @@ def test_signup_returns_token():
         res_me = clean.get("/api/auth/me", headers={"Authorization": f"Bearer {token}"})
         assert res_me.status_code == 200
         assert res_me.json()["username"] == "new_mobile_user"
+
+
+def test_update_profile_display_name_and_password():
+    with TestClient(app) as c:
+        c.post("/api/auth/signup", json={"username": "profile_user", "password": "initial_password"})
+
+        # 1. Update display name
+        res = c.put("/api/auth/profile", json={"display_name": "Alice Wonderland"})
+        assert res.status_code == 200
+        assert res.json()["display_name"] == "Alice Wonderland"
+
+        # Check /me reflects display name
+        res_me = c.get("/api/auth/me")
+        assert res_me.json()["display_name"] == "Alice Wonderland"
+
+        # 2. Update password with wrong current password
+        res_wrong = c.put("/api/auth/profile", json={"current_password": "wrong", "password": "new_password_123"})
+        assert res_wrong.status_code == 400
+
+        # 3. Update password successfully
+        res_pw = c.put("/api/auth/profile", json={"current_password": "initial_password", "password": "new_password_123"})
+        assert res_pw.status_code == 200
+
+        # 4. Verify login with new password
+        c.post("/api/auth/logout")
+        res_relogin = c.post("/api/auth/login", json={"username": "profile_user", "password": "new_password_123"})
+        assert res_relogin.status_code == 200
+

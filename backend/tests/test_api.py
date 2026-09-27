@@ -15,7 +15,7 @@ def test_auth_required_and_bad_login(client):
 
 
 def test_me(client):
-    assert client.get("/api/auth/me").json() == {"id": 1, "username": "user"}
+    assert client.get("/api/auth/me").json() == {"id": 1, "username": "user", "display_name": "user"}
 
 
 def wallet_id(client, name="Checking"):
