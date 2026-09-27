@@ -1,5 +1,24 @@
 # Changes
 
+## 2026-09-27 08:33 EDT - Feature
+
+Cloud database (Supabase PostgreSQL), cloud object storage (Supabase Storage), and mobile-ready dual authentication for deployment to Render.
+
+- **Database:**
+  - Added support for PostgreSQL via `DATABASE_URL` with connection pooling and `psycopg` driver.
+  - Made schema column inspection in `add_missing_columns()` dialect-agnostic via SQLAlchemy `inspect` (supporting both SQLite and PostgreSQL).
+  - Added dialect-aware upsert logic in `backend/app/fx.py` to use `sqlalchemy.dialects.postgresql.insert` when running on PostgreSQL.
+- **Receipt Storage:**
+  - Added `backend/app/storage.py` adapter. When `SUPABASE_URL` and `SUPABASE_SERVICE_ROLE_KEY` are provided, uploads receipts to the Supabase `receipts` bucket and serves them via short-lived signed URLs.
+  - Falls back to local filesystem when Supabase is not configured (offline/dev/tests).
+- **Authentication:**
+  - Updated `backend/app/auth.py` to support `Authorization: Bearer <token>` in addition to session cookies.
+  - Returns `token` in login and signup responses for mobile app compatibility.
+- **Docker & Deployment:**
+  - Updated `Dockerfile` CMD to bind to `${PORT:-8000}` dynamically for Render compatibility.
+- **Tests:**
+  - 87 backend tests pass (9 new tests covering URL normalization, dialect selection, dual auth, storage upload, and signed URL redirection).
+
 ## 2026-09-26 10:12 EDT - Modification
 
 Receipts are read with Tesseract OCR again instead of the qwen3-vl vision model through Ollama. The model was slow on the Mac and tied deployments to a machine that can run it.

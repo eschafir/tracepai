@@ -2,6 +2,7 @@ import secrets
 from typing import Annotated
 
 from fastapi import APIRouter, Cookie, Depends, HTTPException, Response
+from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pwdlib import PasswordHash
 from pydantic import StringConstraints
 from sqlmodel import Session, SQLModel, select
@@ -13,15 +14,24 @@ from app.seed import start_account
 
 password_hash = PasswordHash.recommended()
 router = APIRouter(prefix="/auth", tags=["auth"])
+bearer_security = HTTPBearer(auto_error=False)
 
 DbSession = Annotated[Session, Depends(get_session)]
 
 
-def current_user(db: DbSession, session_token: Annotated[str | None, Cookie()] = None) -> User:
-    user_session = db.get(UserSession, session_token) if session_token else None
+def current_user(
+    db: DbSession,
+    session_token: Annotated[str | None, Cookie()] = None,
+    bearer: Annotated[HTTPAuthorizationCredentials | None, Depends(bearer_security)] = None,
+) -> User:
+    token = bearer.credentials if bearer else session_token
+    user_session = db.get(UserSession, token) if token else None
     if not user_session:
         raise HTTPException(401, "Not authenticated")
-    return db.get(User, user_session.user_id)
+    user = db.get(User, user_session.user_id)
+    if not user:
+        raise HTTPException(401, "Not authenticated")
+    return user
 
 
 CurrentUser = Annotated[User, Depends(current_user)]
@@ -37,11 +47,12 @@ class SignUp(SQLModel):
     password: Annotated[str, StringConstraints(min_length=8)]
 
 
-def start_session(db: Session, response: Response, user: User):
+def start_session(db: Session, response: Response, user: User) -> str:
     token = secrets.token_urlsafe(32)
     db.add(UserSession(token=token, user_id=user.id))
     db.commit()
     response.set_cookie("session_token", token, httponly=True, samesite="lax", max_age=60 * 60 * 24 * 30)
+    return token
 
 
 @router.post("/login")
@@ -49,8 +60,8 @@ def login(creds: Credentials, response: Response, db: DbSession):
     user = db.exec(select(User).where(User.username == creds.username)).first()
     if not user or not password_hash.verify(creds.password, user.password_hash):
         raise HTTPException(401, "Invalid username or password")
-    start_session(db, response, user)
-    return {"username": user.username}
+    token = start_session(db, response, user)
+    return {"username": user.username, "token": token}
 
 
 @router.post("/signup")
@@ -61,13 +72,19 @@ def signup(data: SignUp, response: Response, db: DbSession):
     db.add(user)
     db.flush()
     start_account(db, user)
-    start_session(db, response, user)
-    return {"username": user.username}
+    token = start_session(db, response, user)
+    return {"username": user.username, "token": token}
 
 
 @router.post("/logout")
-def logout(response: Response, db: DbSession, session_token: Annotated[str | None, Cookie()] = None):
-    if session_token and (user_session := db.get(UserSession, session_token)):
+def logout(
+    response: Response,
+    db: DbSession,
+    session_token: Annotated[str | None, Cookie()] = None,
+    bearer: Annotated[HTTPAuthorizationCredentials | None, Depends(bearer_security)] = None,
+):
+    token = bearer.credentials if bearer else session_token
+    if token and (user_session := db.get(UserSession, token)):
         db.delete(user_session)
         db.commit()
     response.delete_cookie("session_token")

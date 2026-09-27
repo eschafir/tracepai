@@ -7,10 +7,21 @@ import logging
 import threading
 import urllib.request
 
-from sqlalchemy.dialects.sqlite import insert
 from sqlmodel import Session, select
 
 from app.models import FxRate, Wallet
+
+
+def get_insert_fn():
+    from app.db import engine
+
+    if engine.dialect.name == "postgresql":
+        from sqlalchemy.dialects.postgresql import insert
+
+        return insert
+    from sqlalchemy.dialects.sqlite import insert
+
+    return insert
 
 log = logging.getLogger(__name__)
 
@@ -67,7 +78,8 @@ def refresh(db: Session, currency: str, strict: bool = False):
             log.warning("Exchange rates for %s could not be fetched: %s", currency, err)
             rows = []
         if rows:
-            stmt = insert(FxRate).values([{"currency": currency, "date": d, "per_usd": r} for d, r in rows])
+            insert_fn = get_insert_fn()
+            stmt = insert_fn(FxRate).values([{"currency": currency, "date": d, "per_usd": r} for d, r in rows])
             db.exec(stmt.on_conflict_do_update(index_elements=["currency", "date"], set_={"per_usd": stmt.excluded.per_usd}))
             db.commit()
             _checked[currency] = today
