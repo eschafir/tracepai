@@ -3,9 +3,9 @@ import datetime as dt
 from fastapi import APIRouter, HTTPException
 from sqlmodel import col, select
 
-from app.auth import CurrentUser, DbSession
+from app.auth import CurrentUser, DbSession, check_owned
 from app.models import ContributionIn, Entry, Frequency, Goal, GoalBase, Kind, RecurringRule, Transaction, Wallet
-from app.recurring import advance, post_due
+from app.recurring import advance, delete_rule, post_due
 from app.wallets import check_received
 
 router = APIRouter(prefix="/goals", tags=["goals"])
@@ -76,6 +76,7 @@ def list_goals(db: DbSession, user: CurrentUser):
 
 @router.post("")
 def create_goal(data: GoalBase, db: DbSession, user: CurrentUser):
+    check_owned(db, Wallet, user.id, data.wallet_id)
     goal = Goal.model_validate(data, update={"user_id": user.id})
     db.add(goal)
     db.commit()
@@ -86,6 +87,7 @@ def create_goal(data: GoalBase, db: DbSession, user: CurrentUser):
 @router.put("/{goal_id}")
 def update_goal(goal_id: int, data: GoalBase, db: DbSession, user: CurrentUser):
     goal = get_owned(db, user, goal_id)
+    check_owned(db, Wallet, user.id, data.wallet_id)
     if data.wallet_id != goal.wallet_id and linked(db, goal):
         raise HTTPException(422, "Money has already moved into this goal's wallet, so the goal must stay there.")
     goal.sqlmodel_update(data.model_dump())
@@ -101,7 +103,8 @@ def delete_goal(goal_id: int, db: DbSession, user: CurrentUser):
     for txn in linked(db, goal):
         txn.goal_id = None
     for rule in db.exec(select(RecurringRule).where(RecurringRule.goal_id == goal.id)):
-        db.delete(rule)
+        delete_rule(db, rule)
+    db.flush()
     db.delete(goal)
     db.commit()
     return {"ok": True}
@@ -127,6 +130,7 @@ def add_contribution(goal_id: int, data: ContributionIn, db: DbSession, user: Cu
     goal = get_owned(db, user, goal_id)
     if goal.wallet_id is None:
         raise HTTPException(422, "Choose where this goal's money is kept first.")
+    check_owned(db, Wallet, user.id, data.wallet_id)
     if data.wallet_id == goal.wallet_id:
         raise HTTPException(422, "Choose a different wallet from the one this goal is kept in.")
     if data.repeat and data.direction == "out":

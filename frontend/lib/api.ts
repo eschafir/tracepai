@@ -202,6 +202,7 @@ export type SharedWallet = {
   color_slot: number;
   owner_id: number;
   members: Member[];
+  invited: Member[]; // invited, but they haven't accepted yet
   my_balance: number; // positive: the others owe you
   expense_count: number;
   in_use: boolean; // has expenses or payments, so its currency is locked
@@ -243,8 +244,15 @@ export type SharedExpense = {
     username: string;
     percent: number;
     amount: number;
+    status: "accepted" | "pending" | "declined"; // until they accept what the payer shares, it doesn't count for them
     payment: { id: number; date: string; recorded_by: number[] } | null;
   }[];
+};
+
+// What others want to share with you; nothing counts for you until you accept.
+export type ShareRequests = {
+  wallets: { id: number; name: string; owner: string }[];
+  people: { id: number; username: string; expenses: number }[];
 };
 
 // Percent per user id from a transaction's shared_members: "1:60,4:40", or the older "1,4" for an equal split.

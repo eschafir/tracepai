@@ -1,216 +1,188 @@
 # TracepAI Code Review
 
-Date: 2026-09-27
-Scope: the whole repository at commit `31b49ba` (backend `backend/app`, frontend `frontend/`, Dockerfile, scripts, docs, tests).
+Date: 2026-09-28
+Scope: the whole repository as it is in the working tree (commit `3b25d1a` plus the uncommitted fixes from the second review in `docs/code_review_2.md`): `backend/app`, `frontend/`, Dockerfile, scripts, docs and tests.
 
 ## Summary
 
-The codebase is small, readable and consistent. Routers are thin, helpers are well named, docstrings explain intent, and the 92 backend tests pass (`uv run pytest`, 2.5 s). The frontend type-checks cleanly (`npx tsc --noEmit`).
+The code is in good shape. Routers are thin, helpers are small and well named, and docstrings explain intent. The fixes from the last review work: sharing now needs consent, repeating items can't start long ago, and a member who left a shared wallet can edit their old expenses. All 115 backend tests pass (`uv run pytest`, 6.3 s), and the frontend type-checks cleanly (`npx tsc --noEmit`).
 
-The main problems are in three areas:
+What remains falls into three groups:
 
-1. **Authorization and input trust.** Several endpoints accept ids of other users' wallets and categories, any signed-in user can read any receipt, and an uploaded receipt can be served as HTML (stored XSS). The profile import writes file contents straight into table models without validation.
-2. **Cloud deployment (the new Render/Supabase/Postgres path).** The mock account with a published password is created on any empty database, sessions never expire, and several behaviours differ between SQLite and Postgres because SQLite foreign keys are not enforced.
-3. **Profile export/import (latest commit).** Merge duplicates data, settle-up payments become ordinary spending after a restore, and "replace" (the default) can fail or damage shared data.
+1. **Shared money that counts in the wrong place (medium).** Categories from a shared wallet's owner leak into a member's own records, declined or pending shares disappear from everyone's spending, and leaving a shared wallet erases your share of its past expenses.
+2. **The new login limit (medium).** The per-username limit added in the last round lets anyone lock any account out.
+3. **Earlier low findings (low).** Most are still open: 500s on malformed input, receipt files that are never deleted, category and budget consistency, build pinning and hygiene.
+
+About 45 files are modified or new and not committed yet, including `backend/tests/test_access_and_integrity.py`, `backend/tests/test_consent_and_limits.py` and `frontend/components/ShareRequests.tsx`. Commit them before starting on this list.
 
 Findings marked **Confirmed** were reproduced with a TestClient script against a temporary database. The others were found by reading the code.
 
 ## Findings
 
-Severity: **High** means a security or data-loss issue to fix before deploying publicly. **Medium** is a real bug or a risk under normal use. **Low** is cleanup, performance or hygiene.
-
-### High
-
-#### H1. Stored XSS through receipt uploads (Confirmed)
-
-- **Where:** `backend/app/routers/receipts.py:18` and `:42`
-- **Problem:** the stored file's extension comes from the uploaded filename, and `FileResponse` picks the content type from that extension. A valid image (for example a GIF with HTML appended) uploaded as `x.html` passes `to_images`, gets saved as `<uuid>.html`, and is served as `text/html` from the app's own origin. Anyone who opens that link while signed in runs the attacker's script, which can call every API endpoint with the victim's cookie.
-- **Evidence:** a GIF uploaded as `x.html` was served back with `content-type: text/html; charset=utf-8`.
-- **Action:** take the suffix from the detected format (`.pdf` when `is_pdf`, otherwise `Image.open(...).format`), never from the filename. Serve receipts with an explicit `media_type` and the header `X-Content-Type-Options: nosniff`.
-
-#### H2. Any signed-in user can read any receipt
-
-- **Where:** `backend/app/routers/receipts.py:32-42`, `backend/app/storage.py`
-- **Problem:** `GET /api/receipts/{name}` checks that someone is signed in, but not that the receipt belongs to them. Names are random UUIDs, so this is hard to exploit today, but receipts are personal documents and the check costs one query. The profile import also lets a user set `receipt_path` to any name.
-- **Action:** store receipts as `<user_id>/<uuid>.<ext>`, and only serve a name with the caller's prefix. This also covers a freshly scanned receipt that isn't attached to a transaction yet.
-
-#### H3. Missing ownership checks on referenced ids (Confirmed)
-
-- **Where:**
-  - `backend/app/routers/transactions.py:56` (`apply`): `wallet_id`, `to_wallet_id`, `category_id`, split `category_id`
-  - `backend/app/routers/recurring.py:66,78`: `wallet_id`, `to_wallet_id`, `category_id`
-  - `backend/app/routers/budgets.py:23,32`: `category_id`
-  - `backend/app/routers/goals.py:78,87`: `wallet_id`
-- **Problem:** only the goal link is checked (`check_linked`). A user can create transactions, rules and budgets that point at another user's wallet or category. Ids that don't exist are accepted too. On SQLite this leaves orphan rows. `check_received` then raises `AttributeError` (500) on a missing wallet, and `export` raises `KeyError` on a foreign wallet.
-- **Evidence:** a second account created an expense on the mock user's Checking wallet (200) and a budget on the mock user's category (200).
-- **Action:** add one helper, for example `owned(db, Model, id, user) -> Model` that raises 422, next to the existing `get_owned` functions. Call it for every referenced id in `apply`, `create_rule`/`update_rule`, `create_budget`/`update_budget` and `create_goal`/`update_goal`. The six copies of `get_owned` can be folded into the same helper.
-
-#### H4. Profile import writes unvalidated data and can break an account (Confirmed)
-
-- **Where:** `backend/app/routers/imports.py:143-345`
-- **Problem:** the import builds `Wallet`, `Category`, `Transaction` and other table models directly from the JSON. SQLModel table models skip validation, so negative amounts, out-of-range `color_slot`, unknown `kind` values and malformed dates go straight into the database. Missing keys (`w["name"]`, `t["amount"]`) raise `KeyError` and return a 500 instead of a 400. Transfers are never checked with `check_transfer` or `check_received`.
-- **Evidence:** importing one transaction with `"kind": "bogus"` succeeded. After that, every request that lists the account's transactions failed with `LookupError: 'bogus' is not among the defined enum values`, and the account could not be used.
-- **Action:** validate each record with the input models that already exist (`WalletBase`, `CategoryBase`, `BudgetBase`, `GoalBase`, `RecurringBase`, `TransactionIn`) before remapping ids, and turn `ValidationError`/`KeyError` into one 400 that names the bad record. Run the same ownership and transfer checks as the normal endpoints.
-
-#### H5. Mock account with a published password on cloud deployments
-
-- **Where:** `backend/app/db.py:64-66`, `backend/app/seed.py:72`, `README.md`, `scripts/start-*.sh`
-- **Problem:** `init_db` seeds `user` / `password` whenever the user table is empty, including on the new Postgres/Render path. On a public URL anyone can sign in to that account. It also receives shares: other users can add it to shared wallets and expenses.
-- **Action:** seed only when explicitly enabled, for example `TRACEPAI_SEED_DEMO=1`, set by the local start scripts and not by the Render deploy. This keeps the local mock-data requirement in CLAUDE.md.
+Severity: **High** means a security or data-loss issue to fix before any public deployment. **Medium** is a real bug or a risk under normal use. **Low** is cleanup, performance or hygiene. No high findings are open.
 
 ### Medium
 
-#### M1. Profile import "merge" duplicates everything (Confirmed)
+#### M1. A shared wallet's categories leak into a member's own records (Confirmed)
 
-- **Where:** `backend/app/routers/imports.py:237-323`
-- **Problem:** merge reuses wallets and categories by name, but always inserts new goals, recurring rules and transactions. Importing your own export once doubles the account.
-- **Evidence:** merging the mock user's own export changed the transaction count from 240 to 480. Duplicated recurring rules will also post each charge twice from now on.
-- **Action:** in merge mode, skip transactions that already exist, using the `(date, amount, merchant)` key that `save_rows` uses per wallet. Skip goals and rules with the same name/merchant and wallet. Otherwise, remove merge and keep replace only (simpler).
+- **Where:**
+  - `backend/app/categorize.py:29-36`: `suggest_category` looks through all of the user's transactions, including the expenses they added to someone else's shared wallet. Those use the owner's categories.
+  - `backend/app/routers/imports.py:144-157`: `save_rows` saves the suggested category without checking who owns it.
+  - `frontend/components/TransactionModal.tsx:165-171`: the form pre-fills the suggested category.
+- **Problem:** after a member adds "Corner Deli" to a shared wallet, the suggestion for "Corner Deli" is the owner's Groceries category. This causes three problems:
+  - A CSV import saves the member's own transaction with the owner's category. It shows as "Uncategorized" in the member's charts and budgets.
+  - That transaction can't be edited: every save returns 422 "Category not found".
+  - The member's profile export can no longer be imported: "it refers to a category that isn't in the file".
 
-#### M2. Export/import turns settle-up and pay-back payments into spending
+  In the add form, the suggestion picks a category that isn't in the member's list, and saving fails.
+- **Evidence:** the suggestion returned category 4 (the owner's Groceries) instead of 14 (the member's). The CSV row was imported with category 4. The edit returned 422, and re-importing the member's own profile export returned 400.
+- **Action:**
+  - In `suggest_category`, only learn from transactions with `shared_wallet_id` set to `None`.
+  - In `save_rows`, check that the category belongs to the user.
+  - Clear the category on existing rows where it doesn't belong to the user and the row isn't in a shared wallet. This can be a one-off step in `init_db`.
 
-- **Where:** `backend/app/routers/export.py:106-126`, `backend/app/routers/imports.py:286-323`
-- **Problem:** the profile export leaves out `settlement_id`, `share_payment_id`, `shared_wallet_id` and `shared_members`. After a restore, "Settle up with ..." and "Paid ... back" transactions become ordinary expenses and income. Analytics then counts them as spending (`analytics.spending` only excludes them by those ids), and shared expenses count at 100% instead of your share.
-- **Action:** export these fields. On import, keep them only if the referenced settlement, payment or shared wallet still exists and involves the user. Otherwise, import the row with a tag (for example `settle-up`) and keep it out of spending the same way. At minimum, document the limitation in the import dialog.
+#### M2. The per-username login limit lets anyone lock an account out (Confirmed)
 
-#### M3. "Replace" import is the default and is unsafe with shared data
+- **Where:** `backend/app/auth.py:26-28` and `:94-98`
+- **Problem:** after 50 failed logins for a username from any clients, `login` returns 429 before it checks the password. The real owner is then locked out too, even with the correct password and from a new address. Anyone can keep this up with 50 requests every 15 minutes. Signup is open and `/api/auth/users/{username}` confirms which usernames exist, so every account on the public deployment can be targeted. This undoes the goal stated on line 26: "so no one can lock the owner out with a few wrong guesses".
+- **Evidence:** after 5 failures from one client and 50 from 50 other addresses, a login with the correct password from a new address returned 429.
+- **Action:** the limit was added because a client can fake its address when `FORWARDED_ALLOW_IPS=*`. Fix that instead:
+  - Set `FORWARDED_ALLOW_IPS` to the proxy's range. If Render doesn't publish one, key the per-client counter on the rightmost `X-Forwarded-For` entry, which Render appends.
+  - Then remove the per-username lockout. If a global guard is still wanted, slow down failed attempts (for example, a one-second delay after the 50th) instead of blocking the username.
 
-- **Where:** `backend/app/routers/imports.py:159-177`, `frontend/components/ProfileImportModal.tsx:15`
-- **Problem:** replace deletes every transaction, wallet and category of the user without the cleanup that `delete_transaction` does:
-  - `SharePayment` rows and the other person's recorded payment are left behind.
-  - The user's expenses in shared wallets disappear, which silently changes the balances other members see.
-  - Categories used by other members' expenses in a shared wallet the user owns are deleted.
-  - On Postgres the deletes hit foreign keys (`sharepayment.transaction_id`, `settlement`), so the import fails with a 500.
-  - The dialog preselects replace with no confirmation step.
-- **Action:** default the dialog to merge (after M1), and ask for a typed confirmation before replace. In replace, delete through the same path as `delete_transaction`, or refuse replace while the user owns or belongs to a shared wallet.
+#### M3. Pending and declined direct shares disappear from everyone's spending (Confirmed)
 
-#### M4. Lowercase currency breaks wallets and analytics (Confirmed)
+- **Where:** `backend/app/routers/analytics.py:66-80` (`spending`)
+- **Problem:** the payer's own shared expense counts only their percent. The other person's percent counts only once they accept. Until then, and forever after a decline, that part of the money counts for no one. The payer's wallet still drops by the whole amount, so their spending, budgets and savings rate are too low.
+- **Evidence:** a 100 USD dinner shared 50/50 with someone who declined added 50 USD to the payer's spending and nothing to the other person's.
+- **Action:** in `spending`, add the percent of everyone who hasn't accepted to the payer's share. `status()` in `routers/shared_expenses.py` already works out who has accepted. The Shared page can then say "counts as yours until they accept".
 
-- **Where:** `backend/app/routers/wallets.py:65-69`, `backend/app/routers/shared.py:100-104`
-- **Problem:** the code compares `data.currency.upper()` with the stored currency, but only uppercases the value inside `check_currency`, which runs only when the currency changes. Saving a USD wallet with `"usd"` stores `usd`. `Rates.per_usd("usd")` then finds no rates and `values[max(i, 0)]` raises `IndexError`.
-- **Evidence:** after `PUT /api/wallets/{id}` with `"currency": "usd"`, both `GET /api/wallets` and `GET /api/analytics/summary` returned 500.
-- **Action:** uppercase in the model with a field validator on `WalletBase.currency` and `SharedWalletBase.currency`, and remove the manual `.upper()` calls.
+#### M4. Leaving a shared wallet erases your share of its past expenses (Confirmed)
 
-#### M5. Deleting a wallet or category leaves dangling references
+- **Where:** `backend/app/routers/analytics.py:48-52`
+- **Problem:** `spending` includes other people's expenses only from the shared wallets the user is in now (`my_ledgers`). After someone settles up and leaves, their share of expenses others paid disappears from past months. Their charts, budgets and year review change after the fact. Their own expenses in that shared wallet still count, so the history becomes inconsistent.
+- **Evidence:** a member's September spending was 50 USD (half of a 100 USD hotel). After they settled up and left, it was 0.
+- **Action:** select shared-wallet expenses by whether the user has a share in `shared_members`, not by current membership. They accepted the invitation when they joined, so no new consent is needed.
 
-- **Where:** `backend/app/routers/wallets.py:39-41,76-82`, `backend/app/routers/categories.py:46-50`
-- **Problem:**
-  - `used()` only looks at transactions. A wallet that has recurring rules or goals but no transactions yet can be deleted. The rule then posts transactions into a wallet that no longer exists, and `analytics.converter` fails on `db.get(Wallet, ...).currency` (500 on the dashboard). `analytics.budgets` fails with a `KeyError` on `currency_of[rule.wallet_id]`.
-  - Deleting a category leaves budgets, transactions, splits and rules pointing at it. On SQLite they become "Uncategorized". On Postgres the delete itself raises an `IntegrityError` (500).
-- **Action:** make `used()` also check `RecurringRule` and `Goal`. For categories, either block the delete while in use (like wallets) or null out `category_id` and delete the budget in the same request.
+#### M5. A decline can't be undone
 
-#### M6. SQLite does not enforce foreign keys
-
-- **Where:** `backend/app/db.py:25`
-- **Problem:** there is no `PRAGMA foreign_keys=ON`, so every FK and the `ondelete="CASCADE"` on `Split` does nothing in SQLite. Postgres enforces them. The local app, the tests and the cloud deployment therefore behave differently (see M3 and M5), and the tests can't catch these bugs.
-- **Action:** add a SQLAlchemy `connect` event listener that runs `PRAGMA foreign_keys=ON` for SQLite, then fix whatever the tests show.
-
-#### M7. Sessions never expire and cookies aren't marked secure
-
-- **Where:** `backend/app/auth.py:22-34,50-55`, `backend/app/models.py:55-58`
-- **Problem:** the cookie lasts 30 days, but the token row is valid forever, and a bearer token (returned to mobile clients) never expires. Changing the password doesn't sign out other sessions. The cookie has no `secure` flag, which matters now that the app is deployed over HTTPS. Login has no attempt limit.
-- **Action:** reject sessions older than 30 days in `current_user` (the `created_at` column already exists). Delete the user's other sessions on password change. Set `secure=True` when an env var such as `TRACEPAI_SECURE_COOKIES` is set. A simple per-username failure counter is enough to limit login attempts.
-
-#### M8. Recurring posting is only safe in a single process
-
-- **Where:** `backend/app/recurring.py:23-38`
-- **Problem:** `post_due` runs on GET requests and uses a process-local `threading.Lock`. The comment says "the app runs as a single process", but the Postgres/Render deployment can run several workers or instances. Two of them can post the same due date twice.
-- **Action:** add a unique constraint on `(recurring_id, date)` for `Transaction` and ignore conflicts, or lock the rule rows with `SELECT ... FOR UPDATE` on Postgres. The constraint is simpler and works on both databases.
-
-#### M9. Exchange rates hang the app when offline
-
-- **Where:** `backend/app/fx.py:67-87,104-111`, `backend/app/routers/fx.py:11-23`
-- **Problem:**
-  - `_checked` is only set after a successful fetch. When the network is down, every request tries again (5 s timeout per source) while holding the global `_lock`. The dashboard sends 14 requests in parallel (`frontend/app/page.tsx:70-83`), so they queue behind each other and the page hangs for a long time.
-  - A currency with no stored rates makes `per_usd` raise `IndexError` (500).
-  - `/api/fx/convert` accepts any string for `source` and `to`, and each unknown code causes a new outbound request.
-  - `/api/fx/currencies` fetches the full list on every call.
-- **Action:** record the attempt in `_checked` even when it fails, with a shorter retry (for example once an hour). Have `per_usd` raise a clear `ValueError` when there are no rates. Restrict `/fx/convert` to 3-letter uppercase codes. Cache `currencies()` for the day.
-
-#### M10. No upload size limits
-
-- **Where:** `backend/app/routers/receipts.py:16`, `backend/app/routers/imports.py:28,151`
-- **Problem:** receipts, CSV statements and profile JSON are read into memory in full. A large upload can exhaust memory on a small Render instance. A failed scan also leaves the stored file behind, because it is saved before OCR runs.
-- **Action:** reject files over a fixed size (for example 15 MB) using `UploadFile.size`. Save the receipt after OCR succeeds.
+- **Where:** `backend/app/shared.py:134-136` and `frontend/components/ShareRequests.tsx`
+- **Problem:** after someone clicks Decline for a person, that person's shared expenses are hidden for good. `/api/shared/requests` lists only people who haven't been answered yet, and no page lists declined people. `POST /api/shared-expenses/people/{id}/accept` would fix it, but nothing in the UI calls it. It also works the other way: once you accept someone, there's no way to stop counting what they share. A single mis-click on Decline or Accept is permanent.
+- **Evidence:** after a decline, `/api/shared/requests` returned `{"wallets": [], "people": []}`.
+- **Action:** add a short "People" list to the Shared page. It lists everyone you have answered (from `ShareConsent`), with Accept or Stop counting next to each. The endpoints already exist.
 
 ### Low
 
-#### L1. Deleting a shared wallet deletes other members' transactions
-`backend/app/routers/shared.py:112-126`. The owner's delete removes expenses that each member recorded in their own wallets. The docstring says this is intended, but members lose records of money that really left their wallets. Consider detaching them instead (`shared_wallet_id = None`, `shared_members = None`), the same way `delete_goal` detaches transfers.
+#### L1. Old backups with a recurring item can't be restored (Confirmed)
 
-#### L2. Legacy share format is missed by `shared_with`
-`backend/app/shared.py:113`. The SQL filter looks for `"{uid}:"`, so expenses stored in the older `"1,4"` format never reach the other members. Either migrate old rows to the percent format once at startup, or drop the legacy branch in `shares()` if no such rows exist.
+- **Where:** `backend/app/routers/imports.py:256` and `:329-340`, `backend/app/models.py:127-130`
+- **Problem:** the M1 fix from the last review (`check_start`) applies to imported profiles. A profile exported more than a year ago usually has a recurring item whose next date is now over a year old, so the whole import fails. The error also reads badly: `record()` prints an empty location for model-level errors, which gives "(: Value error, A repeating item ...)".
+- **Action:**
+  - On import, move an old `next_date` forward with `advance` to the first date that is today or later. Say so in the import result. Posting a year or more of missed items isn't what a restore should do.
+  - In `record()`, leave out the location when it's empty, and remove the "Value error, " prefix the same way `lib/api.ts` does.
 
-#### L3. Tag filter matches substrings
-`backend/app/routers/transactions.py:43`. `tags.contains("vac")` matches `vacation`, and `"food"` matches `seafood`. Match whole comma-separated tags instead.
+#### L2. Malformed input returns 500 (Confirmed, carried over)
 
-#### L4. Unbounded or unvalidated query parameters cause 500s or heavy work
-- `analytics.cashflow` loops day by day over any `start`/`end` range: `start=0001-01-01` builds millions of entries.
-- `month_bounds` raises `ValueError` (500) for a malformed `month`.
-- `year_review` accepts any year.
+The following requests still return 500:
+- `/api/analytics/summary?month=bad` (`analytics.py:97-99`)
+- `/api/analytics/year?year=1`
+- `/api/recurring/upcoming?days=99999999` (`routers/recurring.py:29-38`)
+- `POST /api/import` with a `mapping` that isn't JSON (`imports.py:90`) or an unknown `date_format` (`importer.py:37`)
 
-Constrain `month` with a `YYYY-MM` pattern and cap the range.
+A `cashflow` range that runs past year 9999 does too.
 
-#### L5. Repeated work in analytics and shared wallets
-- `year_review` rebuilds `spending()` about six times, and each call runs `post_due` and a full query.
-- `shared.summary` calls `expenses()` three times, and `list_shared` does this for every ledger.
-- `ledger_detail` fetches the wallet and the recorders once per row (N+1 queries).
+Use `Query(pattern=r"^\d{4}-\d{2}$")` for `month`, `Query(ge=2000, le=2100)` for `year` and `Query(ge=1, le=366)` for `days`. Use `Literal[...]` for `date_format`, and validate `mapping` with `Mapping.model_validate_json`. Cap `cashflow` ranges at a few years.
 
-This is fine at current data sizes. Compute once and pass the lists down when it starts to matter.
+#### L3. Categories and budgets are not checked for consistency (Confirmed, carried over)
 
-#### L6. Export code is verbose
-`backend/app/routers/export.py:42-144` spells out every field and uses `x.value if hasattr(x, "value") else str(x)`, which is unnecessary because the enums are `StrEnum`. `model_dump(mode="json", exclude={"user_id"})` per record would cut the function to about 20 lines and keep export in sync with the models automatically. That also fixes M2 as a side effect.
+- An income transaction can use an expense category (`transactions.py:75` only checks the owner). The same is true for recurring items (`routers/recurring.py:67`).
+- Several budgets can exist for one category (`budgets.py:22-29`): two POSTs both returned 200. Budget views then list the category twice, and `budget_plan` counts both limits.
 
-#### L7. Small inconsistencies
-- `backend/app/storage.py:9-11` defines `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY` and `RECEIPTS_BUCKET`, then never uses them and reads the environment again in every function.
-- `receipts.py:36` and `db.py:44` import inside functions for no reason.
-- `auth.update_profile` checks the password length by hand instead of reusing the `SignUp` constraint, `display_name` has no length limit, and `getattr(user, "display_name", "")` is unnecessary because the column always exists.
-- `imports.py:3-5` has a stray blank line inside the import block.
+Check `category.kind` against the transaction kind in `apply` and `check_rule`. Return 409 when a budget for that category already exists.
 
-#### L8. Frontend
-- `frontend/lib/api.ts:96` drops the caller's `headers` whenever `json` is passed.
-- Four `catch {}` blocks swallow errors silently (for example `Shell.tsx:67`). Show a toast instead.
-- There is no lint script (ESLint isn't configured). `tsc` is clean.
-- `components/TransactionModal.tsx` (651 lines) and the larger pages would be easier to change if split into smaller components. Do this only when they're next touched.
+#### L4. Usernames are case-sensitive (Confirmed, carried over)
 
-#### L9. Build and dependencies
-- `Dockerfile` pins neither `ghcr.io/astral-sh/uv:latest` nor `node:lts-slim`, so builds can't be reproduced. Pin versions or digests.
-- The container runs as root. Add a non-root user that owns `/data`.
-- `pyproject.toml` lists `httpx2` as the dev dependency, but Starlette's `TestClient` imports `httpx`. Tests only work because `supabase` pulls in `httpx` indirectly (`uv tree --invert --package httpx`). Replace `httpx2` with `httpx`.
-- The `supabase` SDK is a large dependency used for two storage calls. Consider calling the Storage REST API directly with `httpx`, or making it optional.
+`auth.py:112` and `:99`: `backup5` and `Backup5` both signed up. Two accounts that look the same make sharing by username error-prone. Store and look up usernames in lowercase, and apply the same rule in `find_user` and `find_users`.
 
-#### L10. Documentation drift
-- `README.md` says `uv run pytest -m model -s`, but the marker is `ocr`.
-- The README and CLAUDE.md describe a local SQLite-only app, while the code now supports Postgres, Supabase Storage and Render. The environment variables (`DATABASE_URL`, `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY`, `SUPABASE_RECEIPTS_BUCKET`, `PORT`, `TRACEPAI_GEOCODER_URL`) aren't documented.
-- `.gitignore` ignores `CLAUDE.md` and `.claude/`, so the project instructions aren't versioned.
+#### L5. Share requests can be used for spam
 
-#### L11. Test gaps
-The tests cover features well, but not these cases:
-- **Cross-user access:** one user referencing another user's wallet, category or receipt (H2, H3).
-- **Upload handling:** receipt content types (H1) and profile import validation (H4, M1).
-- **Currency case:** lowercase currency codes (M4).
-- **Deletes with references:** deleting a wallet or category that is still in use (M5).
-- **Postgres:** only mocked. One run against a real Postgres (for example a CI service container) would have caught M3 and M5.
+- A direct share is a request, and anyone can send one to any user id. Ids are sequential, so one account can put a banner on every user's pages.
+- A declined shared wallet invitation deletes the `SharedMember` row, so the owner can invite the same person again right away, as often as they like.
+
+This is annoying rather than harmful now that nothing counts without consent. Keep declined wallet invitations as a declined row, and don't invite that person again. For direct shares, M5's People list already makes a decline stick.
+
+#### L6. Deleting a shared expense removes the other person's pay-back record
+
+`transactions.py:169-170` calls `delete_payment`, which also deletes the "Paid ... back" transaction in the other person's wallet (`shared.py:143-147`). Their wallet balance changes without them doing anything. Undo on the Transactions page then re-creates the expense without its payments. Detach the other person's recorded transaction instead (`share_payment_id = None`, tagged `settle-up`). Also ask for confirmation instead of offering Undo when a shared expense has payments.
+
+#### L7. Earlier low findings still open
+
+- **Receipt files are never deleted** (`storage.py` has no delete). Files stay after a transaction is deleted, a receipt is replaced, a profile is replaced, or a scan is cancelled. Every scan uploads the file before the user saves anything.
+- **"Repeat" drops the goal** (`transactions.py:141`): `goal_id` isn't copied into the new recurring item.
+- **Settle-up and pay-back transactions can be edited** (`transactions.py:63`). The `Settlement` or `SharePayment` then no longer matches the wallet. Return 409 for them.
+- **Profile import trusts ids from another database** (`imports.py:215-233`). Keep links to shared wallets and payments only when the file was exported from this instance.
+- **Dashboard failures leave a blank page** (`frontend/app/page.tsx:66-93`): 14 requests in `Promise.all` with no `catch`, and no guard against a slower, older response overwriting a newer one.
+- **Deleting a shared wallet** deletes other members' expenses from their own wallets (`routers/shared.py:150-167`). Detach them instead.
+- **Legacy share format** (`shared.py:47-48`): the `"1,4"` branch in `parse_shares` is never matched by `shared_with`'s `"{uid}:"` filter. Migrate old rows once, or drop the branch.
+- **Tag filter matches substrings** (`transactions.py:44`): `food` matches `seafood`.
+- **Repeated work:**
+  - `analytics.summary` builds `spending()` four times, and `year_review` about six times. Each build runs `post_due` and a full query.
+  - `routers/shared.py` `summary` calls `expenses()` twice.
+  - `ledger_detail`, `in_ledger_currency` and `shared_expenses.item` fetch wallets one row at a time.
+  - `shared_expenses.status` reads all of the other person's consents once per share.
+  - `save_rows` scans the whole history for every imported row.
+
+  None of this matters at current data sizes.
+- **Export code** (`routers/export.py:42-148`) spells out every field and uses `hasattr(x, "value")` on `StrEnum` values. `model_dump(mode="json", exclude={"user_id"})` would cut it to a few lines.
+- **CSV formula injection** (`export.py:35-38`): cells starting with `=`, `+`, `-` or `@` run as formulas in Excel. Prefix them with `'`.
+- **Small inconsistencies:**
+  - `storage.py:9-11` defines constants it never uses and reads the environment again in each function.
+  - `db.py:48-72` has two near-identical branches; `inspect()` works for SQLite too.
+  - Imports inside functions: `db.py:61`, `fx.py:16-25`, `fx.py:98`.
+  - `fx.py:27` defines `log` after a function; move it up with the other module globals.
+  - `routers/fx.py:2` has a stray blank line in the import block.
+  - `auth.update_profile` checks the password length by hand, and `display_name` has no length limit.
+  - `getattr(user, "display_name", "")` is used where `user.display_name` would do (`auth.py:142`, `:162`).
+- **Exchange-rate lock** (`fx.py:73`, `:89`): one global lock is held during the network fetch. A lock per currency is enough.
+- **Import error handler** (`imports.py:179`): `record()` turns `AttributeError` and `TypeError` into a 400, which hides programming errors as bad input.
+- **Sessions table** (`auth.py:47-50`): expired sessions are deleted only when used again. Delete expired rows at login.
+- **Frontend:**
+  - `lib/api.ts:98` drops the caller's `headers` whenever `json` is passed.
+  - `catch {}` blocks swallow errors silently: `Shell.tsx:68`, `ProfileImportModal.tsx:48`, `app/shared/page.tsx:54` and `LocationField.tsx:57`.
+  - `ShareRequests.tsx:12` has no `catch` on its first load.
+  - There is no ESLint script, and `TransactionModal.tsx` (658 lines) would be easier to change in smaller parts.
+
+#### L8. Build, dependencies and docs (carried over)
+
+- `Dockerfile:1,9` uses the unpinned tags `node:lts-slim` and `ghcr.io/astral-sh/uv:latest`, and the container runs as root.
+- `pyproject.toml:21` lists `httpx2`. Starlette's `TestClient` needs `httpx`, which is only installed because `supabase` pulls it in.
+- `supabase` is a large SDK used for two storage calls. The Storage REST API through `httpx` would do.
+- `README.md:29` says `pytest -m model`, but the marker is `ocr`.
+- `.gitignore:45-47` ignores `CLAUDE.md` and `.claude/`, so the project instructions aren't versioned.
+
+#### L9. Tests
+
+- There are no tests for M1-M5 or L1 above. Each has a short reproduction in this review that can become a test.
+- Postgres is only mocked (`test_cloud_db.py`). One CI run against a real Postgres would cover the foreign-key, `FOR UPDATE` and `ADD COLUMN ... DEFAULT` paths.
+- The consent screens (the requests banner, invited members) were never checked in a browser (`docs/CHANGES.md`, 2026-09-28 08:25).
 
 ## Action plan
 
-In priority order. Each item is small, and none needs new infrastructure.
+In priority order. S is under an hour, M is a few hours.
 
 | # | Action | Findings | Effort |
 |---|--------|----------|--------|
-| 1 | Derive receipt suffix from content, serve with explicit type and `nosniff`, store under a `user_id/` prefix and check it | H1, H2 | S |
-| 2 | One `owned()` helper for every referenced id in transactions, recurring, budgets and goals; add cross-user tests | H3, L11 | S |
-| 3 | Validate profile import records with the existing input models; 400 on bad files; tests with malformed files | H4 | M |
-| 4 | Seed the mock account only when `TRACEPAI_SEED_DEMO=1` (set in local start scripts) | H5 | S |
-| 5 | Uppercase currency in a model validator | M4 | S |
-| 6 | Enable SQLite foreign keys; extend `used()` to rules and goals; block or detach category deletes | M5, M6 | S |
-| 7 | Fix profile import: dedupe merge, keep settlement/share fields, safe replace with confirmation | M1, M2, M3, L6 | M |
-| 8 | Session expiry, revoke other sessions on password change, secure cookie flag, simple login attempt limit | M7 | S |
-| 9 | Unique `(recurring_id, date)` constraint for posted transactions | M8 | S |
-| 10 | Cache failed FX fetches, clear error for missing rates, validate currency codes, cache the currency list | M9 | S |
-| 11 | Upload size limits; save receipt after OCR | M10 | S |
-| 12 | Replace `httpx2` with `httpx`; pin Docker base images; non-root container | L9 | S |
-| 13 | Update README (test marker, cloud env vars) and version CLAUDE.md | L10 | S |
-| 14 | Remaining low items as the code is touched | L1-L8 | S each |
-
-Effort: S is under an hour, M is a few hours.
+| 1 | Commit the uncommitted fixes, new tests and `ShareRequests.tsx` | - | S |
+| 2 | Learn categories only from the user's own non-shared transactions; check ownership in CSV import; clear leaked categories once | M1 | S |
+| 3 | Replace the per-username lockout with a correct client address (proxy range or rightmost `X-Forwarded-For`) | M2 | S |
+| 4 | Count unaccepted shares as the payer's; select shared-wallet expenses by share, not current membership | M3, M4 | S |
+| 5 | People list on the Shared page to change an accept or decline; keep declined wallet invitations | M5, L5 | M |
+| 6 | Tests for M1-M5, and a browser check of the consent screens | L9 | M |
+| 7 | Move old recurring dates forward on profile import; readable model-level errors | L1 | S |
+| 8 | Bound and validate query and form parameters so they return 4xx | L2 | S |
+| 9 | Check category kind; one budget per category; lowercase usernames | L3, L4 | S |
+| 10 | Detach instead of delete: other people's pay-backs, members' expenses on shared wallet delete; no editing of payments | L6, L7 | S |
+| 11 | Delete receipt files with their transaction; clean up unattached scans | L7 | S |
+| 12 | Dashboard error handling and stale-response guard | L7 | S |
+| 13 | Pin Docker images, non-root user, `httpx` instead of `httpx2`, README fix, version `CLAUDE.md` | L8 | S |
+| 14 | Remaining low items as the code is touched | L7 | S each |

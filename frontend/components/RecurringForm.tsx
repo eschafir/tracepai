@@ -12,6 +12,13 @@ const KINDS: { value: Kind; label: string }[] = [
 ];
 
 /** Adds a recurring item, or edits one when `initial` is given. */
+// Every missed date is added when the item is saved, so the server allows starting at most 365 days ago.
+const yearAgo = () => {
+  const d = new Date();
+  d.setDate(d.getDate() - 365);
+  return iso(d);
+};
+
 export default function RecurringForm({
   wallets,
   categories,
@@ -176,7 +183,7 @@ export default function RecurringForm({
         </label>
         <label className="text-sm font-medium">
           {initial ? "Next date" : "First date"}
-          <input className="field mt-1" type="date" required value={nextDate} onChange={(e) => setNextDate(e.target.value)} />
+          <input className="field mt-1" type="date" required min={yearAgo()} value={nextDate} onChange={(e) => setNextDate(e.target.value)} />
         </label>
       </div>
       <div className="flex flex-wrap items-center justify-between gap-3">

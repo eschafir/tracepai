@@ -86,6 +86,7 @@ def test_post_due_catches_up(client):
         assert rule.next_date > TODAY
         for t in posted:
             db.delete(t)
+        db.flush()  # the transactions point at the rule
         db.delete(rule)
         db.commit()
 

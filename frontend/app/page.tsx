@@ -25,7 +25,7 @@ import { GoalsPanel } from "@/components/goals";
 import SortablePanels from "@/components/SortablePanels";
 import { api, BudgetPlan, BudgetStyle, Category, Goal, PriceChange, Settings, Upcoming, Wallet } from "@/lib/api";
 import { Alerts, GroupBars, ZeroBasedSummary } from "@/components/budgetViews";
-import { money, Period, periodRange, shortDate, slotColor } from "@/lib/format";
+import { money, Period, periodRange, shortDate, slotColor, thisMonth } from "@/lib/format";
 
 type Merchants = {
   largest: { id: number; date: string; merchant: string; amount: number }[];
@@ -65,21 +65,22 @@ export default function Dashboard() {
 
   const load = useCallback(async () => {
     const scope = wallet ? `wallet=${wallet}` : "";
+    const month = `month=${thisMonth()}`;
     const range = new URLSearchParams({ ...periodRange(period), ...(wallet && { wallet }) });
     const [balance, cats, cashflow, budgets, merchants, comparison, categoryList, wallets, upcoming, goals, networth, prices, plan, settings] = await Promise.all([
       api<BalancePoint[]>(`/analytics/balance?${scope}`),
       api<CategoryTotal[]>(`/analytics/categories?${range}`),
       api<CashflowPoint[]>(`/analytics/cashflow?${range}&bucket=${bucket}`),
-      api<BudgetStatus[]>("/analytics/budgets"),
+      api<BudgetStatus[]>(`/analytics/budgets?${month}`),
       api<Merchants>(`/analytics/merchants?${range}&limit=6`),
-      api<ComparisonPoint[]>(`/analytics/comparison?${scope}`),
+      api<ComparisonPoint[]>(`/analytics/comparison?${month}&${scope}`),
       api<Category[]>("/categories"),
       api<Wallet[]>("/wallets"),
       api<Upcoming[]>("/recurring/upcoming?days=14"),
       api<Goal[]>("/goals"),
       api<NetWorthPoint[]>("/analytics/networth"),
       api<PriceChange[]>("/recurring/price-changes"),
-      api<BudgetPlan>("/analytics/budget-plan"),
+      api<BudgetPlan>(`/analytics/budget-plan?${month}`),
       api<Settings>("/settings"),
     ]);
     setData({ balance, categories: cats, cashflow, budgets, merchants, comparison, wallets, upcoming, goals, networth, prices, plan, style: settings.budget_style });

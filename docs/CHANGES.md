@@ -1,5 +1,165 @@
 # Changes
 
+## 2026-09-28 08:32 EDT - Review
+
+Fifth full code review, written to `docs/code_review.md`. The earlier reports are in `docs/code_review_1.md` and `docs/code_review_2.md`. No application code was changed.
+
+- **Checks:** all 115 backend tests pass, and the frontend type-checks cleanly.
+- **New findings (medium, all reproduced against a temporary database):**
+  - **M1:** category suggestions learn from expenses in other people's shared wallets. As a result, a CSV import saves the owner's category on a member's own transaction, that transaction can't be edited, and the member's profile export can't be imported again.
+  - **M2:** the per-username login limit lets anyone lock any account out with 50 wrong guesses every 15 minutes.
+  - **M3:** the share of someone who hasn't accepted, or declined, counts as no one's spending, although it left the payer's wallet.
+  - **M4:** leaving a shared wallet removes your share of its past expenses from your history.
+  - **M5:** a Decline (or Accept) of a person can't be changed in the app.
+- **New low findings:**
+  - profile backups older than a year fail on their recurring items
+  - share requests can be used for spam
+  - deleting a shared expense deletes the other person's pay-back record
+- **Earlier findings:** most earlier low findings are still open and are listed again.
+- **Action plan:** 14 prioritized actions at the end of the report, starting with committing the uncommitted fixes.
+
+## 2026-09-28 08:25 EDT - Fix
+
+Fixed the high and medium findings (H1, M1-M4) from the fourth review in `docs/code_review.md`.
+
+- **Sharing needs consent (H1):**
+  - **Shared wallets:** adding someone to a shared wallet now sends an invitation (`SharedMember.pending`). Until they accept, they aren't a member: they can't see or add to the shared wallet, and no one can give them a share.
+    - New endpoints: `POST /api/shared/{id}/accept` and `/decline`.
+    - The owner can take an invitation back with the existing remove-member endpoint.
+    - Shared wallet responses list `invited` people.
+  - **Direct shares:** expenses someone shares with you directly count only after you accept that person (new `ShareConsent` table).
+    - New endpoints: `POST /api/shared-expenses/people/{id}/accept` and `/decline`. Declining hides their expenses.
+    - Each share now has a `status` (accepted, pending or declined), which the payer sees.
+  - **Requests:** `GET /api/shared/requests` lists both kinds of request. A new `ShareRequests` banner at the top of every page offers Accept and Decline.
+  - **Where invitations show:** invited people appear on the shared wallet page, and are kept when the owner edits the wallet.
+  - **Existing data:** existing members stay members. The column migration in `backend/app/db.py` now also gives new boolean columns their default. Existing direct shares wait for one acceptance.
+- **Repeating items start at most a year ago (M1):**
+  - `check_start` in `backend/app/models.py` rejects, with a 422, a recurring item, a repeating transaction or a repeating goal contribution that starts more than 365 days ago.
+  - The recurring form's date field has the same `min`.
+- **Login limit (M2):** besides 5 failures per username and client, `backend/app/auth.py` allows at most 50 failed logins per username per 15 minutes from all clients together. The README says to set `FORWARDED_ALLOW_IPS` to the proxy's address range instead of `*`.
+- **Former members (M3):**
+  - `apply` in `backend/app/routers/transactions.py` lets someone who left a shared wallet edit their expense in it, keeping its split. A change to the amount, date, wallet or shared wallet returns 409. Deleting it also returns 409, since the others' balances count it.
+  - The transaction form keeps the shared wallet and explains what can change.
+- **Payments and Undo (M4):** on the Transactions page, settle-up and pay-back transactions are deleted after a confirmation and have no Undo. Errors from a delete are shown in a toast.
+- **Tests:**
+  - 5 new tests in `backend/tests/test_consent_and_limits.py`.
+  - Sharing tests updated to accept invitations and shares.
+  - A recurring test now starts 100 days ago.
+  - The migration was checked on a database without the new column: the existing member stayed a member.
+  - All 115 backend tests pass, and the frontend type-checks and builds.
+  - The new screens were not checked in a browser.
+
+## 2026-09-27 20:24 EDT - Review
+
+Fourth full code review, written to `docs/code_review.md`. The first review's report stays in `docs/code_review_1.md`. No application code was changed.
+
+- **Checks:** all 110 backend tests pass, and the frontend type-checks cleanly.
+- **New findings:**
+  - **H1 (high):** anyone can add any user to a shared expense or shared wallet without their consent, and the amounts count in that user's spending, budgets and alerts.
+  - **M1 (medium):** a recurring item dated far in the past posts every missed occurrence at once.
+  - **M2 (medium):** with `FORWARDED_ALLOW_IPS=*`, a client-set `X-Forwarded-For` bypasses the login attempt limit.
+  - **M3 (medium):** a member who left a shared wallet can't edit their own old expenses.
+  - **Low:**
+    - 500s on malformed parameters
+    - receipt files are never deleted
+    - no category-kind check and duplicate budgets
+    - repeat drops `goal_id`
+    - settle-up transactions can be edited
+    - profile import trusts ids from another database
+    - dashboard error handling
+
+  H1, M1, M3 and most of the low findings were reproduced against a temporary database.
+- **Earlier findings:** the Undo issue (now M4) and most earlier low findings are still open, and are listed again.
+- **Action plan:** 12 prioritized actions at the end of the report, starting with committing the uncommitted fixes.
+
+## 2026-09-27 17:50 EDT - Review
+
+Third full code review, written to `docs/code_review.md`, replacing the second report. No application code was changed.
+
+- **Earlier findings:** all 20 high and medium findings from the first two reviews are fixed. The report lists their status and the 14 earlier low findings that are still open.
+- **New findings:**
+  - **R1 (medium):** Undo after a delete on the Transactions page brings back a settle-up or pay-back payment as ordinary spending. It also can't bring back a directly shared expense's pay-back records.
+  - **4 low:** spreadsheet formulas in the CSV export, several budgets for one category, an unbounded `days` on `/recurring/upcoming`, and case-sensitive usernames.
+
+  Every new finding was reproduced against a temporary database.
+- **Performance:** measured and not a concern at this scale. A 2,000-row CSV import takes 1.2 s, and analytics respond in under 0.1 s with 2,240 transactions.
+- **Action plan:** 12 prioritized actions at the end of the report.
+- **Time:** estimated. The clock couldn't be read directly.
+
+## 2026-09-27 17:25 EDT - Fix
+
+Fixed the medium findings N1-N5 from the second review in `docs/code_review.md`.
+
+- **Login limit (N1):** `backend/app/auth.py` counts failed logins per username and client IP, so someone guessing a password no longer locks the real owner out. Entries older than 15 minutes are dropped. The README says to set `FORWARDED_ALLOW_IPS=*` behind Render's proxy.
+- **Split totals (N2):** `TransactionIn` in `backend/app/models.py` rejects splits that don't add up to the transaction amount (422, "The split amounts must add up to the total"). A profile file with such a transaction is rejected too.
+- **Profile merge (N3):** `backend/app/routers/imports.py` stops with a 400 when a wallet in the file has the same name as one in the account but a different currency. Before, its amounts were added in the wrong currency.
+- **Exchange rates (N4):**
+  - `backend/app/fx.py` writes fetched rates in its own session, so fetching rates no longer commits the request's unfinished changes.
+  - `update_shared` in `backend/app/routers/shared.py` now updates members, which can fetch rates, before it changes the ledger. A refused edit (for example removing someone who is still owed money) no longer saves the rename.
+- **Time zone (N5):**
+  - The start scripts pass the host's time zone into the container as `TZ`: from `/etc/localtime` on Mac and Linux, and through .NET on Windows (PowerShell 7; Windows PowerShell 5.1 keeps UTC). Recurring items then post on the user's date, not UTC's.
+  - The dashboard and the Budgets page send the browser's month to the budgets, budget-plan and comparison analytics. The new helper is `thisMonth()` in `frontend/lib/format.ts`.
+- **Tests:** 4 new tests in `backend/tests/test_access_and_integrity.py`. The shared-wallet test was checked to fail on the old code. All 110 backend tests pass, and the frontend builds.
+- **Note:** the two entries before this one (11:15 and 11:45) have estimated times that are too early, because the clock couldn't be read then.
+
+## 2026-09-27 11:45 EDT - Review
+
+Second full code review, written to `docs/code_review.md`, replacing the first report. No application code was changed.
+
+- **Earlier findings:** all 15 high and medium findings from the first review are fixed. The report keeps a status table for them.
+- **New findings:** no high-severity issues. 5 new medium issues:
+  - anyone can lock another user out with failed logins
+  - split amounts aren't checked against the total
+  - profile merge matches wallets by name and ignores their currency
+  - an exchange-rate fetch commits the request's unfinished changes
+  - the server's date is UTC while the browser's is local
+
+  There are also 3 new low issues, and 11 low issues from the first review are still open. The first three medium issues were reproduced.
+- **Action plan:** 12 prioritized actions at the end of the report.
+
+## 2026-09-27 11:15 EDT - Fix
+
+Fixed the high and medium findings from `docs/code_review.md` (H1-H5, M1-M10).
+
+- **Receipts (H1, H2, M10):**
+  - A scanned file's extension now comes from its content, never from the uploaded filename.
+  - Receipts are saved as `<user id>-<random>.<ext>`. Only images and PDFs are served as their own type (anything else as `application/octet-stream`), always with `X-Content-Type-Options: nosniff`.
+  - A receipt is served only to its owner: the name must carry the user's id, or be attached to one of their transactions. A transaction can only point to the user's own receipts.
+  - The file is saved after OCR succeeds.
+  - Uploads (receipts, CSV statements, profile files) are limited to 15 MB, and larger ones get a 413.
+- **Ownership checks (H3):**
+  - New `check_owned()` in `app/auth.py`, used for every wallet, category and split id on transactions, recurring items, budgets, goals and goal contributions. Ids that don't exist now return 422 instead of 500.
+  - Expenses in a shared wallet must use the owner's categories.
+- **Profile import (H4, M1, M2, M3):** `POST /api/import/profile` was rewritten.
+  - **Validation:** every record is checked with the model the API uses for it and through the same code paths (`apply`, `check_rule`). A bad record returns a 400 that names it (for example "Transaction 3 in the file is invalid ..."), and nothing is saved unless the whole file is valid.
+  - **Merge (the default now):** adds only what isn't in the account yet. Goals are matched by name, recurring items by wallet, merchant, kind and frequency, and transactions by wallet, date, amount, merchant and kind.
+  - **Sharing:** the export now includes each transaction's shared wallet, shares, settle-up link and pay-back link. On import they're kept only if they still hold for the user, so restored settle-up payments stay out of spending.
+  - **Replace:** refused (409) while the user shares wallets or expenses. It deletes in foreign-key order.
+  - **Dialog:** the import dialog defaults to merge, and replace needs a confirmation checkbox.
+- **Mock account (H5):** `user` / `password` is only created when `TRACEPAI_SEED_DEMO=1`. The three start scripts set it, and a cloud deployment doesn't.
+- **Currency (M4):** wallet and shared-wallet currencies are uppercased by a model validator, so `"usd"` no longer breaks the wallets list and analytics.
+- **Deletes (M5, M6):**
+  - SQLite now enforces foreign keys, like Postgres.
+  - A wallet used by recurring items or goals can't be deleted.
+  - A category used by transactions, splits or recurring items can't be deleted, and deleting an unused one also removes its budget.
+  - Enforcing foreign keys showed that deleting a recurring item, a goal, a settlement or a shared wallet failed whenever other rows pointed at it. These deletes now remove or detach those rows first.
+  - Transactions a recurring item already posted now stay when the item is deleted and only lose the link (new `delete_rule()` in `app/recurring.py`).
+- **Sessions (M7):**
+  - Sessions expire after 30 days on the server too.
+  - Changing the password signs out the user's other sessions.
+  - `TRACEPAI_SECURE_COOKIES=1` marks the cookie secure.
+  - Five failed logins for a username block it for 15 minutes (429).
+- **Recurring posting (M8):** due rules are locked with `SELECT ... FOR UPDATE`, so several processes on Postgres can't post the same date twice. SQLite keeps the thread lock.
+- **Exchange rates (M9):**
+  - A failed fetch waits an hour before trying again, instead of retrying on every request.
+  - A currency with no stored rates returns a clear 503 instead of an `IndexError`.
+  - `/api/fx/convert` only accepts 3-letter uppercase codes.
+  - The currency list is fetched once a day.
+- **Tests:**
+  - New `backend/tests/test_access_and_integrity.py` (14 tests) covers each fix. All 106 backend tests pass, and the frontend builds.
+  - Test cleanup was adjusted for enforced foreign keys (`test_wallets_recurring.py`) and for the new receipt names (`test_storage.py`).
+- **README:** documents `TRACEPAI_SEED_DEMO` and `TRACEPAI_SECURE_COOKIES`.
+
 ## 2026-09-27 10:26 EDT - Review
 
 Full code review of the repository, written to `docs/code_review.md`. No application code was changed.

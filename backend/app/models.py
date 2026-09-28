@@ -2,7 +2,7 @@ import datetime as dt
 from enum import StrEnum
 from typing import Literal
 
-from pydantic import model_validator
+from pydantic import field_validator, model_validator
 from sqlmodel import Field, Relationship, SQLModel
 
 
@@ -77,6 +77,11 @@ class WalletBase(SQLModel):
     opening_balance: float = 0
     currency: str = Field(default="USD", min_length=3, max_length=3)
 
+    @field_validator("currency")
+    @classmethod
+    def upper_currency(cls, value: str) -> str:
+        return value.upper()
+
 
 class Wallet(WalletBase, table=True):
     id: int | None = Field(default=None, primary_key=True)
@@ -116,6 +121,15 @@ class Entry(SQLModel):
     goal_id: int | None = Field(default=None, foreign_key="goal.id")  # a transfer into or out of a savings goal
 
 
+EARLIEST_START = dt.timedelta(days=365)
+
+
+def check_start(date: dt.date):
+    """Recurring items add every date they missed, so they can't start long ago."""
+    if date < dt.date.today() - EARLIEST_START:
+        raise ValueError("A repeating item can start at most a year ago.")
+
+
 def check_transfer(entry: Entry, splits: list | None = None):
     if entry.kind == Kind.transfer:
         if entry.to_wallet_id is None or entry.to_wallet_id == entry.wallet_id:
@@ -131,6 +145,11 @@ class SharedWalletBase(SQLModel):
     currency: str = Field(default="USD", min_length=3, max_length=3)
     color_slot: int = Field(default=2, ge=1, le=8)
 
+    @field_validator("currency")
+    @classmethod
+    def upper_currency(cls, value: str) -> str:
+        return value.upper()
+
 
 class SharedWallet(SharedWalletBase, table=True):
     """A ledger of expenses split equally between its members. Money stays in each member's own wallets."""
@@ -142,6 +161,15 @@ class SharedWallet(SharedWalletBase, table=True):
 class SharedMember(SQLModel, table=True):
     shared_wallet_id: int = Field(foreign_key="sharedwallet.id", primary_key=True)
     user_id: int = Field(foreign_key="user.id", primary_key=True)
+    pending: bool = False  # invited, but hasn't accepted yet, so nothing in the shared wallet counts for them
+
+
+class ShareConsent(SQLModel, table=True):
+    """Whether a user accepts the expenses someone shares with them directly. Until they do, those don't count."""
+
+    user_id: int = Field(foreign_key="user.id", primary_key=True)
+    from_user_id: int = Field(foreign_key="user.id", primary_key=True)
+    accepted: bool
 
 
 class Settlement(SQLModel, table=True):
@@ -193,6 +221,10 @@ class TransactionIn(TransactionBase):
     @model_validator(mode="after")
     def valid_transfer(self):
         check_transfer(self, self.splits)
+        if self.repeat:
+            check_start(self.date)
+        if self.splits and abs(sum(s.amount for s in self.splits) - self.amount) > 0.005:
+            raise ValueError("The split amounts must add up to the total")
         return self
 
 
@@ -221,6 +253,7 @@ class RecurringBase(Entry):
     @model_validator(mode="after")
     def valid_transfer(self):
         check_transfer(self)
+        check_start(self.next_date)
         return self
 
 
@@ -253,3 +286,9 @@ class ContributionIn(SQLModel):
     note: str = ""
     received: float | None = Field(default=None, gt=0)  # in the destination wallet's currency, when it differs
     repeat: Literal["monthly"] | None = None  # adding only: also add this amount every month
+
+    @model_validator(mode="after")
+    def valid_start(self):
+        if self.repeat:
+            check_start(self.date)
+        return self

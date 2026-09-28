@@ -3,8 +3,9 @@ import datetime as dt
 from fastapi import APIRouter, HTTPException
 from sqlmodel import col, or_, select
 
-from app.auth import CurrentUser, DbSession
-from app.models import Kind, RecurringRule, Split, Transaction, TransactionIn, TransactionOut, User
+from app import storage
+from app.auth import CurrentUser, DbSession, check_owned
+from app.models import Category, Kind, RecurringRule, SharedWallet, Split, Transaction, TransactionIn, TransactionOut, User, Wallet
 from app.recurring import advance, post_due
 from app.routers.goals import check_linked
 from app.shared import delete_payment, encode_shares, equal_shares, get_member_ledger, member_ids, share_payments, shares
@@ -53,14 +54,33 @@ def check_percents(percents: dict[int, float]):
         raise HTTPException(422, "The percentages must add up to 100%.")
 
 
+def left_ledger(db: DbSession, user: CurrentUser, txn: Transaction) -> SharedWallet | None:
+    """The shared wallet of a saved expense that its payer has since left."""
+    ledger = db.get(SharedWallet, txn.shared_wallet_id) if txn.id and txn.shared_wallet_id else None
+    return ledger if ledger and user.id not in member_ids(db, ledger) else None
+
+
 def apply(db: DbSession, user: CurrentUser, txn: Transaction, data: TransactionIn):
+    if (data.shared_wallet_id is not None or data.shares) and data.kind != Kind.expense:
+        raise HTTPException(422, "Only expenses can be shared.")
+    left = left_ledger(db, user, txn)
+    if left:  # the others' balances still count it, so only what doesn't change them can be edited
+        if (data.shared_wallet_id, data.amount, data.date, data.wallet_id) != (left.id, txn.amount, txn.date, txn.wallet_id):
+            raise HTTPException(409, f"You left {left.name}, so this expense stays in it with the same amount, date and wallet.")
+        ledger = left
+    else:
+        ledger = get_member_ledger(db, user.id, data.shared_wallet_id) if data.shared_wallet_id is not None else None
+    check_owned(db, Wallet, user.id, data.wallet_id, data.to_wallet_id)
+    # An expense in a shared wallet uses the categories of the shared wallet's owner.
+    check_owned(db, Category, ledger.owner_id if ledger else user.id, data.category_id, *(s.category_id for s in data.splits))
+    if data.receipt_path not in (None, txn.receipt_path) and not storage.is_own_receipt(user.id, data.receipt_path):
+        raise HTTPException(422, "Receipt not found")
     check_received(db, data)
     if data.goal_id is not None:
         check_linked(db, user, data)
-    if (data.shared_wallet_id is not None or data.shares) and data.kind != Kind.expense:
-        raise HTTPException(422, "Only expenses can be shared.")
-    if data.shared_wallet_id is not None:
-        ledger = get_member_ledger(db, user.id, data.shared_wallet_id)
+    if left:
+        pass  # the split stays as it was
+    elif ledger:
         members = member_ids(db, ledger)
         if data.shares is not None:
             if not set(data.shares) <= set(members):
@@ -144,8 +164,11 @@ def update_transaction(transaction_id: int, data: TransactionIn, db: DbSession, 
 @router.delete("/{transaction_id}")
 def delete_transaction(transaction_id: int, db: DbSession, user: CurrentUser):
     txn = get_owned(db, user, transaction_id)
+    if left := left_ledger(db, user, txn):
+        raise HTTPException(409, f"You left {left.name}, so this expense stays in it: the others' balances count it.")
     for payment in share_payments(db, txn):
         delete_payment(db, payment)
+    db.flush()
     db.delete(txn)
     db.commit()
     return {"ok": True}

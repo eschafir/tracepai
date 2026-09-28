@@ -12,7 +12,8 @@ export default function ProfileImportModal({
 }) {
   const [file, setFile] = useState<File | null>(null);
   const [summary, setSummary] = useState<string | null>(null);
-  const [mode, setMode] = useState<"replace" | "merge">("replace");
+  const [mode, setMode] = useState<"replace" | "merge">("merge");
+  const [confirmReplace, setConfirmReplace] = useState(false);
   const [result, setResult] = useState<ProfileImportResult | null>(null);
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
@@ -92,7 +93,7 @@ export default function ProfileImportModal({
         {result ? (
           <div className="space-y-4">
             <div className="rounded-xl bg-accent-soft p-4 text-ink">
-              <p className="font-semibold text-lg">Profile restored successfully!</p>
+              <p className="font-semibold text-lg">Profile restored. Added:</p>
               <ul className="mt-2 space-y-1 text-sm text-ink-2">
                 <li>Wallets: {result.imported.wallets}</li>
                 <li>Categories: {result.imported.categories}</li>
@@ -142,15 +143,16 @@ export default function ProfileImportModal({
                 <input
                   type="radio"
                   name="import-mode"
-                  value="replace"
-                  checked={mode === "replace"}
-                  onChange={() => setMode("replace")}
+                  value="merge"
+                  checked={mode === "merge"}
+                  onChange={() => setMode("merge")}
                   className="mt-1"
                 />
                 <div>
-                  <span className="block text-sm font-semibold">Replace existing data (Recommended)</span>
+                  <span className="block text-sm font-semibold">Merge with existing data (Recommended)</span>
                   <span className="block text-xs text-ink-2">
-                    Clears default placeholder wallets and categories to recreate the exact setup from the backup.
+                    Keeps your current data and adds what the backup has that this account doesn&apos;t. Wallets and
+                    categories are matched by name, and transactions already here are skipped.
                   </span>
                 </div>
               </label>
@@ -159,18 +161,26 @@ export default function ProfileImportModal({
                 <input
                   type="radio"
                   name="import-mode"
-                  value="merge"
-                  checked={mode === "merge"}
-                  onChange={() => setMode("merge")}
+                  value="replace"
+                  checked={mode === "replace"}
+                  onChange={() => setMode("replace")}
                   className="mt-1"
                 />
                 <div>
-                  <span className="block text-sm font-semibold">Merge with existing data</span>
+                  <span className="block text-sm font-semibold">Replace existing data</span>
                   <span className="block text-xs text-ink-2">
-                    Preserves your current wallets and categories, matching by name and appending transactions.
+                    Deletes this account&apos;s wallets, categories, budgets, goals, recurring items and transactions, then
+                    recreates them from the backup. Not available while you share wallets or expenses with others.
                   </span>
                 </div>
               </label>
+
+              {mode === "replace" && (
+                <label className="flex items-start gap-3 text-sm">
+                  <input type="checkbox" checked={confirmReplace} onChange={(e) => setConfirmReplace(e.target.checked)} className="mt-1" />
+                  <span>I understand this permanently deletes the data in this account.</span>
+                </label>
+              )}
             </div>
 
             {error && <p className="text-sm text-red-500">{error}</p>}
@@ -183,7 +193,7 @@ export default function ProfileImportModal({
                 type="button"
                 className="btn btn-primary"
                 onClick={runImport}
-                disabled={!file || Boolean(error) || busy}
+                disabled={!file || Boolean(error) || busy || (mode === "replace" && !confirmReplace)}
               >
                 {busy ? "Restoring profile..." : "Restore Profile"}
               </button>

@@ -59,6 +59,6 @@ def test_supabase_storage_upload_and_signed_url():
 def test_receipt_redirect_endpoint(client):
     # When Supabase returns a signed URL, GET /api/receipts/{name} should return a redirect
     with patch("app.storage.get_receipt_url", return_value="https://supabase.co/signed/receipt.jpg"):
-        res = client.get("/api/receipts/receipt.jpg", follow_redirects=False)
+        res = client.get("/api/receipts/1-receipt.jpg", follow_redirects=False)  # the mock user's own receipt
         assert res.status_code in (302, 307)
         assert res.headers["location"] == "https://supabase.co/signed/receipt.jpg"

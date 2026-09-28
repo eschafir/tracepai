@@ -1,9 +1,9 @@
 from fastapi import APIRouter, HTTPException
-from sqlmodel import select
+from sqlmodel import col, or_, select
 
 from app.auth import CurrentUser, DbSession
 from app.categorize import suggest_category
-from app.models import Category, CategoryBase, Kind
+from app.models import Budget, Category, CategoryBase, Kind, RecurringRule, Split, Transaction
 
 router = APIRouter(prefix="/categories", tags=["categories"])
 
@@ -45,6 +45,18 @@ def update_category(category_id: int, data: CategoryBase, db: DbSession, user: C
 
 @router.delete("/{category_id}")
 def delete_category(category_id: int, db: DbSession, user: CurrentUser):
-    db.delete(get_owned(db, user, category_id))
+    """Only an unused category can go; its budget goes with it."""
+    category = get_owned(db, user, category_id)
+    split_txns = select(Split.transaction_id).where(Split.category_id == category_id)
+    in_use = [
+        select(Transaction).where(or_(Transaction.category_id == category_id, col(Transaction.id).in_(split_txns))),
+        select(RecurringRule).where(RecurringRule.category_id == category_id),
+    ]
+    if any(db.exec(stmt).first() for stmt in in_use):
+        raise HTTPException(409, f"{category.name} is used by transactions or recurring items. Change their category first.")
+    for budget in db.exec(select(Budget).where(Budget.category_id == category_id)):
+        db.delete(budget)
+    db.flush()
+    db.delete(category)
     db.commit()
     return {"ok": True}

@@ -5,7 +5,7 @@ import Shell from "@/components/Shell";
 import { BudgetBars, BudgetStatus, Panel } from "@/components/charts";
 import { GroupBars, ZeroBasedSummary } from "@/components/budgetViews";
 import { api, ApiError, Budget, BudgetGroup, BudgetPlan, BudgetStyle, Category, Kind } from "@/lib/api";
-import { slotColor } from "@/lib/format";
+import { slotColor, thisMonth } from "@/lib/format";
 
 const STYLES: { value: BudgetStyle; label: string; about: string }[] = [
   { value: "limits", label: "Limits", about: "A monthly limit for each category you choose." },
@@ -26,10 +26,10 @@ export default function BudgetsPage() {
 
   const load = useCallback(async () => {
     const [s, b, c, p, settings] = await Promise.all([
-      api<BudgetStatus[]>("/analytics/budgets"),
+      api<BudgetStatus[]>(`/analytics/budgets?month=${thisMonth()}`),
       api<Budget[]>("/budgets"),
       api<Category[]>("/categories"),
-      api<BudgetPlan>("/analytics/budget-plan"),
+      api<BudgetPlan>(`/analytics/budget-plan?month=${thisMonth()}`),
       api<{ budget_style: BudgetStyle }>("/settings"),
     ]);
     setStatus(s);

@@ -122,6 +122,10 @@ def export_profile(db: DbSession, user: CurrentUser):
             "lng": t.lng,
             "goal_id": t.goal_id,
             "recurring_id": t.recurring_id,
+            "shared_wallet_id": t.shared_wallet_id,
+            "shared_members": t.shared_members,
+            "settlement_id": t.settlement_id,
+            "share_payment_id": t.share_payment_id,
             "splits": [{"category_id": s.category_id, "amount": s.amount} for s in t.splits],
         })
 

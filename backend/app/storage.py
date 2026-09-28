@@ -13,6 +13,11 @@ RECEIPTS_BUCKET = os.environ.get("SUPABASE_RECEIPTS_BUCKET", "receipts")
 _client = None
 
 
+def is_own_receipt(user_id: int, name: str) -> bool:
+    """Receipts are saved as <user id>-<random>.<ext>."""
+    return name.startswith(f"{user_id}-")
+
+
 def is_supabase_storage_enabled() -> bool:
     return bool(os.environ.get("SUPABASE_URL") and (os.environ.get("SUPABASE_SERVICE_ROLE_KEY") or os.environ.get("SUPABASE_KEY")))
 

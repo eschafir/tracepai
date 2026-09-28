@@ -4,10 +4,17 @@ from fastapi import APIRouter, HTTPException
 from sqlmodel import SQLModel, select
 
 from app.auth import CurrentUser, DbSession
-from app.models import Kind, SharePayment, Transaction, User, Wallet
-from app.shared import delete_payment, share_payments, shared_with, shares, usernames
+from app.models import Kind, ShareConsent, SharePayment, Transaction, User, Wallet
+from app.shared import consents, delete_payment, share_payments, shared_with, shares, usernames
 
 router = APIRouter(prefix="/shared-expenses", tags=["shared expenses"])
+
+
+def status(db: DbSession, txn: Transaction, uid: int) -> str:
+    """Whether someone accepted the payer's shares: until they do, the expense doesn't count for them."""
+    if uid == txn.user_id:
+        return "accepted"
+    return {True: "accepted", False: "declined", None: "pending"}[consents(db, uid).get(txn.user_id)]
 
 
 def item(db: DbSession, txn: Transaction) -> dict:
@@ -28,6 +35,7 @@ def item(db: DbSession, txn: Transaction) -> dict:
                 "username": names[uid],
                 "percent": round(fraction * 100, 2),
                 "amount": round(txn.amount * fraction, 2),
+                "status": status(db, txn, uid),
                 "payment": {
                     "id": paid[uid].id,
                     "date": paid[uid].date,
@@ -43,7 +51,9 @@ def item(db: DbSession, txn: Transaction) -> dict:
 
 def get_shared(db: DbSession, user: CurrentUser, transaction_id: int) -> Transaction:
     txn = db.get(Transaction, transaction_id)
-    if not txn or txn.shared_wallet_id is not None or not txn.shared_members or user.id not in (txn.user_id, *shares(txn)):
+    if not txn or txn.shared_wallet_id is not None or not txn.shared_members:
+        raise HTTPException(404, "Shared expense not found")
+    if user.id != txn.user_id and (user.id not in shares(txn) or not consents(db, user.id).get(txn.user_id)):
         raise HTTPException(404, "Shared expense not found")
     return txn
 
@@ -136,3 +146,25 @@ def unmark_paid(payment_id: int, db: DbSession, user: CurrentUser):
     delete_payment(db, payment)
     db.commit()
     return item(db, txn)
+
+
+def answer(db: DbSession, user: CurrentUser, from_user_id: int, accepted: bool):
+    if from_user_id == user.id or not db.get(User, from_user_id):
+        raise HTTPException(404, "User not found")
+    consent = db.get(ShareConsent, (user.id, from_user_id)) or ShareConsent(user_id=user.id, from_user_id=from_user_id, accepted=accepted)
+    consent.accepted = accepted
+    db.add(consent)
+    db.commit()
+    return {"ok": True}
+
+
+@router.post("/people/{user_id}/accept")
+def accept_person(user_id: int, db: DbSession, user: CurrentUser):
+    """Count the expenses this person shares with you, now and from now on."""
+    return answer(db, user, user_id, True)
+
+
+@router.post("/people/{user_id}/decline")
+def decline_person(user_id: int, db: DbSession, user: CurrentUser):
+    """Ignore the expenses this person shares with you."""
+    return answer(db, user, user_id, False)

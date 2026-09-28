@@ -9,7 +9,7 @@ import Toast from "@/components/Toast";
 import ReceiptViewer, { ReceiptButton } from "@/components/ReceiptViewer";
 import ShareStatus from "@/components/ShareStatus";
 import TransactionModal from "@/components/TransactionModal";
-import { api, Category, Goal, SharedExpense, SharedWallet, Transaction, Wallet, parseShares } from "@/lib/api";
+import { api, ApiError, Category, Goal, SharedExpense, SharedWallet, Transaction, Wallet, parseShares } from "@/lib/api";
 import { money, shortDate, slotColor } from "@/lib/format";
 
 // Leaflet needs the browser's window, so the map only loads on the client.
@@ -48,6 +48,8 @@ function Transactions({ wallet }: { wallet: string }) {
   const [editing, setEditing] = useState<Transaction | "new" | null>(null);
   const [view, setView] = useState<"list" | "map">("list");
   const [deleted, setDeleted] = useState<Transaction | null>(null);
+  const [confirming, setConfirming] = useState<number | null>(null); // a payment, which Undo can't bring back
+  const [notice, setNotice] = useState("");
   const [goals, setGoals] = useState<Goal[]>([]);
   const [shared, setShared] = useState<SharedWallet[]>([]);
   const [myId, setMyId] = useState<number | null>(null);
@@ -90,10 +92,19 @@ function Transactions({ wallet }: { wallet: string }) {
   const setFilter = (key: keyof typeof filters) => (e: React.ChangeEvent<HTMLInputElement | HTMLSelectElement>) =>
     setFilters({ ...filters, [key]: e.target.value });
 
+  // Settle-up and pay-back payments are linked to the Shared page, so they're deleted after a confirmation instead of
+  // with Undo: re-creating one would make it ordinary spending.
+  const isPayment = (t: Transaction) => t.settlement_id !== null || t.share_payment_id !== null;
+
   async function remove(t: Transaction) {
+    setConfirming(null);
     setTransactions((rows) => rows && rows.filter((r) => r.id !== t.id));
-    await api(`/transactions/${t.id}`, { method: "DELETE" });
-    setDeleted(t);
+    try {
+      await api(`/transactions/${t.id}`, { method: "DELETE" });
+      if (!isPayment(t)) setDeleted(t);
+    } catch (err) {
+      setNotice(err instanceof ApiError ? err.message : "Deleting failed. Check that TracepAI is running.");
+    }
     load();
   }
 
@@ -106,6 +117,7 @@ function Transactions({ wallet }: { wallet: string }) {
   }
 
   const clearToast = useCallback(() => setDeleted(null), []);
+  const clearNotice = useCallback(() => setNotice(""), []);
 
   const splitOf = (t: Transaction) => sharedExpenses.find((e) => e.id === t.id);
   const sharedWithMe = sharedExpenses.filter((e) => e.paid_by.id !== myId);
@@ -122,9 +134,20 @@ function Transactions({ wallet }: { wallet: string }) {
         <button className="mr-3 text-accent" onClick={() => setEditing(t)}>
           Edit
         </button>
-        <button className="text-ink-2 hover:text-critical" onClick={() => remove(t)}>
-          Delete
-        </button>
+        {confirming === t.id ? (
+          <>
+            <button className="mr-3 font-medium text-critical" onClick={() => remove(t)}>
+              Delete payment
+            </button>
+            <button className="text-ink-2" onClick={() => setConfirming(null)}>
+              Keep
+            </button>
+          </>
+        ) : (
+          <button className="text-ink-2 hover:text-critical" onClick={() => (isPayment(t) ? setConfirming(t.id) : remove(t))}>
+            Delete
+          </button>
+        )}
       </>
     );
   }
@@ -375,6 +398,7 @@ function Transactions({ wallet }: { wallet: string }) {
           onDone={clearToast}
         />
       )}
+      {notice && <Toast message={notice} onDone={clearNotice} />}
       {viewing?.receipt_path && (
         <ReceiptViewer
           path={viewing.receipt_path}

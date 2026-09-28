@@ -1,8 +1,8 @@
 from fastapi import APIRouter, HTTPException
 from sqlmodel import select
 
-from app.auth import CurrentUser, DbSession
-from app.models import Budget, BudgetBase
+from app.auth import CurrentUser, DbSession, check_owned
+from app.models import Budget, BudgetBase, Category
 
 router = APIRouter(prefix="/budgets", tags=["budgets"])
 
@@ -21,6 +21,7 @@ def list_budgets(db: DbSession, user: CurrentUser) -> list[Budget]:
 
 @router.post("")
 def create_budget(data: BudgetBase, db: DbSession, user: CurrentUser) -> Budget:
+    check_owned(db, Category, user.id, data.category_id)
     budget = Budget.model_validate(data, update={"user_id": user.id})
     db.add(budget)
     db.commit()
@@ -31,6 +32,7 @@ def create_budget(data: BudgetBase, db: DbSession, user: CurrentUser) -> Budget:
 @router.put("/{budget_id}")
 def update_budget(budget_id: int, data: BudgetBase, db: DbSession, user: CurrentUser) -> Budget:
     budget = get_owned(db, user, budget_id)
+    check_owned(db, Category, user.id, data.category_id)
     budget.sqlmodel_update(data.model_dump())
     db.commit()
     db.refresh(budget)

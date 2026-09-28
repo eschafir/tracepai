@@ -1,11 +1,19 @@
 import io
 
 import pypdfium2
-from fastapi import HTTPException
+from fastapi import HTTPException, UploadFile
 from PIL import Image, ImageOps, UnidentifiedImageError
 
 MAX_PAGES = 8
 MAX_SIDE = 1600
+MAX_UPLOAD = 15 * 1024 * 1024
+
+
+def read_upload(file: UploadFile) -> bytes:
+    content = file.file.read(MAX_UPLOAD + 1)
+    if len(content) > MAX_UPLOAD:
+        raise HTTPException(413, f"Files can be up to {MAX_UPLOAD // (1024 * 1024)} MB.")
+    return content
 
 
 def _png(image: Image.Image) -> bytes:
@@ -18,6 +26,14 @@ def _png(image: Image.Image) -> bytes:
 
 def is_pdf(content: bytes) -> bool:
     return content.startswith(b"%PDF-")
+
+
+def suffix(content: bytes) -> str:
+    """The file extension for an upload that to_images accepted, from its content and never from its name."""
+    if is_pdf(content):
+        return ".pdf"
+    image_format = Image.open(io.BytesIO(content)).format
+    return ".jpg" if image_format in ("JPEG", "MPO") else f".{image_format.lower()}"
 
 
 def to_images(content: bytes) -> list[bytes]:

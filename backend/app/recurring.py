@@ -20,15 +20,17 @@ def advance(date: dt.date, frequency: Frequency) -> dt.date:
     return date.replace(year=year, month=month, day=min(date.day, calendar.monthrange(year, month)[1]))
 
 
-# Pages load several endpoints in parallel and each calls post_due, so posting is serialized
-# to keep two requests from posting the same due date. The app runs as a single process.
+# Pages load several endpoints in parallel and each calls post_due, so posting is serialized to keep two requests
+# from posting the same due date: by this lock within a process, and by locking the rule rows (FOR UPDATE, which
+# SQLite ignores) across processes. A request that waited then sees the new next_date and has nothing to post.
 _posting = threading.Lock()
 
 
 def post_due(db: Session, user_id: int, today: dt.date | None = None):
     today = today or dt.date.today()
     with _posting:
-        rules = db.exec(select(RecurringRule).where(RecurringRule.user_id == user_id, RecurringRule.next_date <= today)).all()
+        due = select(RecurringRule).where(RecurringRule.user_id == user_id, RecurringRule.next_date <= today)
+        rules = db.exec(due.with_for_update().execution_options(populate_existing=True)).all()
         for rule in rules:
             while rule.next_date <= today:
                 fields = rule.model_dump(exclude={"id", "user_id", "frequency", "next_date", "price_seen"})
@@ -36,6 +38,14 @@ def post_due(db: Session, user_id: int, today: dt.date | None = None):
                 rule.next_date = advance(rule.next_date, rule.frequency)
         if rules:
             db.commit()
+
+
+def delete_rule(db: Session, rule: RecurringRule):
+    """The transactions a rule already added really happened, so they stay and only lose the link."""
+    for txn in db.exec(select(Transaction).where(Transaction.recurring_id == rule.id)):
+        txn.recurring_id = None
+    db.flush()
+    db.delete(rule)
 
 
 def suggestions(db: Session, user_id: int) -> list[dict]:

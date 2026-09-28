@@ -351,6 +351,21 @@ function SharedLedger({ id }: { id: string }) {
                 )}
               </li>
             ))}
+            {ledger.invited.map((person) => (
+              <li key={person.id} className="flex items-center gap-1.5 rounded-full border border-line py-1 pr-1 pl-3 text-ink-2">
+                {person.username}
+                <span className="text-xs">invited</span>
+                {isOwner && (
+                  <button
+                    aria-label={`Take back the invitation to ${person.username}`}
+                    className="rounded-full px-2 hover:text-critical"
+                    onClick={() => run(() => api(`/shared/${ledger.id}/members/${person.id}`, { method: "DELETE" }))}
+                  >
+                    ×
+                  </button>
+                )}
+              </li>
+            ))}
           </ul>
           {isOwner && (
             <form
@@ -372,7 +387,7 @@ function SharedLedger({ id }: { id: string }) {
             </form>
           )}
           <p className="mt-3 text-xs text-ink-2">
-            People added later share only the expenses added after they join. Expenses use {isOwner ? "your" : `${name(ledger.owner_id)}'s`}{" "}
+            People you add are invited, and join once they accept. They share only the expenses added after they join. Expenses use {isOwner ? "your" : `${name(ledger.owner_id)}'s`}{" "}
             categories; in each person&apos;s own charts they count under the category with the same name, or &quot;Shared&quot;.
           </p>
           {isOwner && ledger.expenses.length === 0 && ledger.settlements.length === 0 && (

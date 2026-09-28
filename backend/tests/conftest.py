@@ -2,6 +2,7 @@ import os
 import tempfile
 
 os.environ["TRACEPAI_DATA_DIR"] = tempfile.mkdtemp()
+os.environ["TRACEPAI_SEED_DEMO"] = "1"
 
 import pytest
 from fastapi.testclient import TestClient

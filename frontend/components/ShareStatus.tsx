@@ -51,6 +51,9 @@ export default function ShareStatus({
         ) : (
           <span className={mine ? "text-critical" : "text-ink"}>{mine ? `You owe ${payer} ${amount}` : `${share.username} owes you ${amount}`}</span>
         )}
+        {share.status !== "accepted" && (
+          <span className="text-ink-2">{share.status === "pending" ? `${share.username} hasn't accepted your shared expenses yet` : `${share.username} declined your shared expenses`}</span>
+        )}
         {!form && !payment && (
           <button type="button" className="text-accent" onClick={() => setForm({ date: iso(new Date()), wallet: "", recordOnly: false })}>
             Mark paid

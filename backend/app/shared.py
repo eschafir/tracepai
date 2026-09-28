@@ -7,18 +7,25 @@ from fastapi import HTTPException
 from sqlmodel import Session, col, or_, select
 
 from app import fx
-from app.models import Settlement, SharePayment, SharedMember, SharedWallet, Transaction, User, Wallet
+from app.models import Settlement, ShareConsent, SharePayment, SharedMember, SharedWallet, Transaction, User, Wallet
 
 
 def member_ids(db: Session, ledger: SharedWallet) -> list[int]:
-    members = db.exec(select(SharedMember.user_id).where(SharedMember.shared_wallet_id == ledger.id)).all()
-    return [ledger.owner_id, *sorted(members)]
+    """The owner and everyone who accepted the invitation."""
+    stmt = select(SharedMember.user_id).where(SharedMember.shared_wallet_id == ledger.id, SharedMember.pending == False)  # noqa: E712
+    return [ledger.owner_id, *sorted(db.exec(stmt).all())]
 
 
-def my_ledgers(db: Session, user_id: int) -> list[SharedWallet]:
-    joined = select(SharedMember.shared_wallet_id).where(SharedMember.user_id == user_id)
-    stmt = select(SharedWallet).where(or_(SharedWallet.owner_id == user_id, col(SharedWallet.id).in_(joined)))
-    return db.exec(stmt.order_by(SharedWallet.id)).all()
+def invited_ids(db: Session, ledger: SharedWallet) -> list[int]:
+    stmt = select(SharedMember.user_id).where(SharedMember.shared_wallet_id == ledger.id, SharedMember.pending == True)  # noqa: E712
+    return sorted(db.exec(stmt).all())
+
+
+def my_ledgers(db: Session, user_id: int, pending: bool = False) -> list[SharedWallet]:
+    """The shared wallets the user owns or joined, or with pending, the ones they're invited to."""
+    joined = select(SharedMember.shared_wallet_id).where(SharedMember.user_id == user_id, SharedMember.pending == pending)
+    mine = col(SharedWallet.id).in_(joined) if pending else or_(SharedWallet.owner_id == user_id, col(SharedWallet.id).in_(joined))
+    return db.exec(select(SharedWallet).where(mine).order_by(SharedWallet.id)).all()
 
 
 def get_member_ledger(db: Session, user_id: int, ledger_id: int) -> SharedWallet:
@@ -29,10 +36,14 @@ def get_member_ledger(db: Session, user_id: int, ledger_id: int) -> SharedWallet
 
 
 def shares(txn: Transaction) -> dict[int, float]:
+    return parse_shares(txn.shared_members)
+
+
+def parse_shares(shared_members: str | None) -> dict[int, float]:
     """Who shares an expense and each person's fraction, from "1:60,4:40". The older "1,4" means an equal split."""
-    if not txn.shared_members:
+    if not shared_members:
         return {}
-    parts = [p.split(":") for p in txn.shared_members.split(",")]
+    parts = [p.split(":") for p in shared_members.split(",")]
     if all(len(p) == 1 for p in parts):
         return {int(p[0]): 1 / len(parts) for p in parts}
     return {int(uid): float(percent) / 100 for uid, percent in parts}
@@ -105,15 +116,24 @@ def usernames(db: Session, ids: list[int]) -> dict[int, str]:
     return {u.id: u.username for u in db.exec(select(User).where(col(User.id).in_(ids)))}
 
 
-def shared_with(db: Session, user_id: int) -> list[Transaction]:
-    """Shared expenses outside shared wallets that the user paid or has a share of, newest first."""
+def consents(db: Session, user_id: int) -> dict[int, bool]:
+    """Whose direct shares the user accepted (True) or declined (False). Anyone else's are waiting for an answer."""
+    return {c.from_user_id: c.accepted for c in db.exec(select(ShareConsent).where(ShareConsent.user_id == user_id))}
+
+
+def shared_with(db: Session, user_id: int, pending: bool = False) -> list[Transaction]:
+    """Shared expenses outside shared wallets that the user paid or accepted a share of, newest first. With pending,
+    the ones from people the user hasn't answered yet."""
     stmt = select(Transaction).where(
         col(Transaction.shared_wallet_id).is_(None),
         col(Transaction.shared_members).is_not(None),
         or_(Transaction.user_id == user_id, col(Transaction.shared_members).contains(f"{user_id}:")),
     )
     txns = db.exec(stmt.order_by(col(Transaction.date).desc(), col(Transaction.id).desc())).all()
-    return [t for t in txns if t.user_id == user_id or user_id in shares(t)]
+    answers = consents(db, user_id)
+    if pending:
+        return [t for t in txns if t.user_id != user_id and user_id in shares(t) and t.user_id not in answers]
+    return [t for t in txns if t.user_id == user_id or (user_id in shares(t) and answers.get(t.user_id))]
 
 
 def share_payments(db: Session, txn: Transaction) -> list[SharePayment]:

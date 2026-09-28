@@ -12,6 +12,9 @@ export const moneyShort = (value: number) => formatter("USD", "compact").format(
 export const iso = (d: Date) =>
   `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
 
+// The browser's month, "2026-09"; month-based analytics take it so they match the user's calendar, not the server's.
+export const thisMonth = () => iso(new Date()).slice(0, 7);
+
 export const parseIso = (s: string) => new Date(`${s}T00:00:00`);
 
 export const shortDate = (s: string) => parseIso(s).toLocaleDateString("en-US", { month: "short", day: "numeric" });

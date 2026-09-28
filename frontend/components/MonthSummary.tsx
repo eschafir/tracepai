@@ -3,9 +3,8 @@
 import { useEffect, useState } from "react";
 import { Panel } from "@/components/charts";
 import { api, MonthSummary as Summary } from "@/lib/api";
-import { iso, money, parseIso, shortDate } from "@/lib/format";
+import { money, parseIso, shortDate, thisMonth } from "@/lib/format";
 
-const thisMonth = () => iso(new Date()).slice(0, 7);
 
 function shiftMonth(month: string, by: number) {
   const d = parseIso(`${month}-01`);

@@ -57,6 +57,11 @@ def test_shared_wallet(client):
     assert client.post(f"{url}/members", json={"username": "nobody"}).status_code == 404
     client.post(f"{url}/members", json={"username": "cara"})
     assert client.post(f"{url}/members", json={"username": "cara"}).status_code == 409
+    # Until cara accepts, she isn't a member: she can't open it or add to it.
+    assert [m["username"] for m in client.get(url).json()["invited"]] == ["cara"]
+    assert cara.get(url).status_code == 404 and cara.get("/api/shared").json() == []
+    assert cara.get("/api/shared/requests").json()["wallets"] == [{"id": home["id"], "name": "Home", "owner": "user"}]
+    assert cara.post(f"{url}/accept").status_code == 200 and cara.post(f"{url}/accept").status_code == 404
     assert cara.post(f"{url}/members", json={"username": "user"}).status_code == 403  # only the owner adds people
 
     checking_before = client.get("/api/wallets").json()[0]["balance"]
@@ -96,6 +101,7 @@ def test_shared_wallet(client):
 
     # Someone who joins later doesn't share earlier expenses.
     client.post(f"{url}/members", json={"username": "dan"})
+    stranger.post(f"{url}/accept")
     uid = {m["username"]: m["id"] for m in client.get(url).json()["members"]}
     assert client.get(url).json()["balances"][str(uid["dan"])] == 0
 
@@ -143,6 +149,7 @@ def test_percentages_editing_and_deleting(client):
     assert all(s["name"] != "Trip" for s in client.get("/api/shared").json())  # nothing was created
     trip = client.post("/api/shared", json={"name": "Trip", "members": ["eva"]}).json()
     url = f"/api/shared/{trip['id']}"
+    trip = eva.post(f"{url}/accept").json()
     uid = {m["username"]: m["id"] for m in trip["members"]}
     assert set(uid) == {"user", "eva"} and trip["expense_count"] == 0 and trip["in_use"] is False
 
@@ -171,9 +178,10 @@ def test_percentages_editing_and_deleting(client):
     # People are managed with the wallet: add fede, and eva can't be removed while she owes money.
     assert client.put(url, json={"name": "Trip", "members": ["fede"]}).status_code == 409
     renamed = client.put(url, json={"name": "Trip 2013", "members": ["eva", "fede"]}).json()
-    assert renamed["name"] == "Trip 2013" and {m["username"] for m in renamed["members"]} == {"user", "eva", "fede"}
+    assert renamed["name"] == "Trip 2013" and {m["username"] for m in renamed["members"]} == {"user", "eva"}
+    assert [m["username"] for m in renamed["invited"]] == ["fede"]
     assert renamed["expense_count"] == 1 and renamed["in_use"] is True
-    assert client.put(url, json={"name": "Trip 2013", "members": ["eva"]}).status_code == 200  # fede is settled
+    assert client.put(url, json={"name": "Trip 2013", "members": ["eva"]}).json()["invited"] == []  # takes back fede's invitation
     assert eva.put(url, json={"name": "Mine now", "members": []}).status_code == 403
 
     # Deleting it removes every expense in it, from every wallet, and the payments recorded for it.
@@ -208,6 +216,14 @@ def test_shared_expense_without_a_shared_wallet(client):
                                                   "shares": {me: 40, dan_id: 60}}).status_code == 422
     dinner = client.post("/api/transactions", json={**expense, "shares": {me: 40, dan_id: 60}}).json()
     assert dinner["shared_members"] == f"{me}:40,{dan_id}:60" and dinner["tags"] == "friends,shared"
+
+    # Nothing counts for dan until he accepts what I share with him.
+    assert dan.get("/api/analytics/summary", params=month).json()["expenses"] == 0
+    assert dan.get("/api/shared-expenses").json() == [] and dan.get(f"/api/shared-expenses/{dinner['id']}").status_code == 404
+    assert dan.get("/api/shared/requests").json()["people"] == [{"id": me, "username": "user", "expenses": 1}]
+    assert [s["status"] for s in client.get(f"/api/shared-expenses/{dinner['id']}").json()["shares"]] == ["accepted", "pending"]
+    assert dan.post(f"/api/shared-expenses/people/{me}/accept").status_code == 200
+    assert dan.get("/api/shared/requests").json()["people"] == []
 
     # Each person's spending is their share, in their own category with the same name.
     assert client.get("/api/analytics/summary", params=month).json()["expenses"] == 36

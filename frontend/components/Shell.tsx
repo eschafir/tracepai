@@ -7,6 +7,7 @@ import { api, Wallet } from "@/lib/api";
 import ProfileModal from "@/components/ProfileModal";
 import ImportDialog from "@/components/ImportDialog";
 import ProfileImportModal from "@/components/ProfileImportModal";
+import ShareRequests from "@/components/ShareRequests";
 
 const NAV = [
   { href: "/", label: "Overview" },
@@ -219,7 +220,10 @@ export default function Shell({ children, actions }: { children: React.ReactNode
           </div>
         </div>
       </header>
-      <main>{children}</main>
+      <main>
+        <ShareRequests />
+        {children}
+      </main>
 
       {showProfile && (
         <ProfileModal

@@ -300,7 +300,7 @@ export default function WalletsPage() {
                       name: s.name,
                       color_slot: s.color_slot,
                       currency: s.currency,
-                      members: s.members.filter((m) => m.id !== s.owner_id).map((m) => m.username),
+                      members: [...s.members, ...s.invited].filter((m) => m.id !== s.owner_id).map((m) => m.username),
                     }}
                     initialShared
                     canToggle={false}

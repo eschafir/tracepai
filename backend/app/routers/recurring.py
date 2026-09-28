@@ -3,9 +3,9 @@ import datetime as dt
 from fastapi import APIRouter, HTTPException
 from sqlmodel import SQLModel, col, select
 
-from app.auth import CurrentUser, DbSession
-from app.models import RecurringBase, RecurringRule
-from app.recurring import advance, post_due, price_changes, suggestions
+from app.auth import CurrentUser, DbSession, check_owned
+from app.models import Category, RecurringBase, RecurringRule, Wallet
+from app.recurring import advance, delete_rule, post_due, price_changes, suggestions
 from app.routers.goals import check_linked
 from app.wallets import check_received
 
@@ -62,11 +62,17 @@ def keep_price(rule_id: int, data: KeepPrice, db: DbSession, user: CurrentUser):
     return {"ok": True}
 
 
-@router.post("")
-def create_rule(data: RecurringBase, db: DbSession, user: CurrentUser) -> RecurringRule:
+def check_rule(db: DbSession, user: CurrentUser, data: RecurringBase):
+    check_owned(db, Wallet, user.id, data.wallet_id, data.to_wallet_id)
+    check_owned(db, Category, user.id, data.category_id)
     check_received(db, data)
     if data.goal_id is not None:
         check_linked(db, user, data)
+
+
+@router.post("")
+def create_rule(data: RecurringBase, db: DbSession, user: CurrentUser) -> RecurringRule:
+    check_rule(db, user, data)
     rule = RecurringRule.model_validate(data, update={"user_id": user.id})
     db.add(rule)
     db.commit()
@@ -77,9 +83,7 @@ def create_rule(data: RecurringBase, db: DbSession, user: CurrentUser) -> Recurr
 @router.put("/{rule_id}")
 def update_rule(rule_id: int, data: RecurringBase, db: DbSession, user: CurrentUser) -> RecurringRule:
     rule = get_owned(db, user, rule_id)
-    check_received(db, data)
-    if data.goal_id is not None:
-        check_linked(db, user, data)
+    check_rule(db, user, data)
     rule.sqlmodel_update(data.model_dump())
     db.commit()
     db.refresh(rule)
@@ -87,7 +91,7 @@ def update_rule(rule_id: int, data: RecurringBase, db: DbSession, user: CurrentU
 
 
 @router.delete("/{rule_id}")
-def delete_rule(rule_id: int, db: DbSession, user: CurrentUser):
-    db.delete(get_owned(db, user, rule_id))
+def remove_rule(rule_id: int, db: DbSession, user: CurrentUser):
+    delete_rule(db, get_owned(db, user, rule_id))
     db.commit()
     return {"ok": True}

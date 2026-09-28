@@ -88,13 +88,15 @@ export default function TransactionModal({
 
   // A shared expense is either in a shared wallet, or shared directly with people you pick.
   const [shared, setShared] = useState(Boolean(initial?.shared_members || sharedWalletId));
-  const [ledgers, setLedgers] = useState<SharedWallet[]>([]);
+  const [ledgers, setLedgers] = useState<SharedWallet[] | null>(null);
   const [sharedId, setSharedId] = useState(String(initial?.shared_wallet_id ?? sharedWalletId ?? ""));
   const [me, setMe] = useState<Person | null>(null);
   const [people, setPeople] = useState<Person[]>([]); // shared directly, besides you
   const [person, setPerson] = useState("");
   const [personError, setPersonError] = useState("");
-  const ledger = kind === "expense" && shared ? ledgers.find((l) => String(l.id) === sharedId) : undefined;
+  const ledger = kind === "expense" && shared ? ledgers?.find((l) => String(l.id) === sharedId) : undefined;
+  // An expense in a shared wallet you left stays in it; the others' balances still count it.
+  const left = ledgers !== null && kind === "expense" && shared && !!sharedId && !ledger;
   const direct = kind === "expense" && shared && !sharedId;
   const members: Person[] = ledger ? ledger.members : direct && me ? [{ id: me.id, username: "You" }, ...people] : [];
   // Percent per person; an edited expense starts from its saved split.
@@ -231,7 +233,7 @@ export default function TransactionModal({
       splits: isTransfer ? [] : splits.map((s) => ({ category_id: Number(s.category_id), amount: Number(s.amount) })),
       repeat: repeat || null,
       goal_id: initial?.goal_id ?? null,
-      shared_wallet_id: ledger ? ledger.id : null,
+      shared_wallet_id: kind === "expense" && shared && sharedId ? Number(sharedId) : null, // also a shared wallet you left
       shares: ledger || direct ? Object.fromEntries(Object.entries(percents).map(([id, p]) => [id, Number(p) || 0])) : null,
     };
     try {
@@ -365,7 +367,12 @@ export default function TransactionModal({
               </span>
             </div>
           )}
-          {kind === "expense" && shared && ledgers.length > 0 && (
+          {left && (
+            <p className="col-span-2 text-sm text-ink-2">
+              You left the shared wallet this expense is in, so only its merchant, notes, tags and place can change.
+            </p>
+          )}
+          {kind === "expense" && shared && !left && ledgers && ledgers.length > 0 && (
             <label className="col-span-2 block text-sm font-medium">
               Shared in
               <select
